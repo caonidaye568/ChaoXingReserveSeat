@@ -80,7 +80,7 @@ class ChaoxingAutoSign:
         else:
             print(f"[-] 签到请求失败，状态码：{res.status_code}")
 
-    def wait_until(self, target_time="07:40:00"):
+    def wait_until(self, target_time="08:40:00"):
         print(f"[+] 等待签到时间 {target_time} 中...")
         while True:
             current_time = time.strftime("%H:%M:%S", time.localtime(time.time() + 8*3600))
@@ -92,7 +92,7 @@ class ChaoxingAutoSign:
 
     def run(self):
         self.login()
-        self.wait_until(target_time="07:40:00")
+        self.wait_until(target_time="08:40:00")
         time.sleep(2)
         reserves = self.get_reserve_list()
         if not reserves:
