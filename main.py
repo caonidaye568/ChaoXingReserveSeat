@@ -22,8 +22,8 @@ get_current_dayofweek = lambda action: (
     else time.strftime("%A", time.localtime(time.time()))
 )
 
-SLEEPTIME = 0.1  # 每次抢座的间隔
-RESERVE_TARGET_TIME = "14:00:00"  # 预约开始的目标时间（北京时间）
+SLEEPTIME = 0.2  # 每次抢座的间隔
+RESERVE_TARGET_TIME = "22:00:00"  # 预约开始的目标时间（北京时间）
 ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 5  # 最大尝试次数
 RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
@@ -72,12 +72,22 @@ def wait_for_target_time(target_time, action):
     current_time = get_current_time(action)
     
     if current_time < target_time:
-        # 计算等待时间
-        current_dt = datetime.datetime.strptime(current_time, "%H:%M:%S")
-        target_dt = datetime.datetime.strptime(target_time, "%H:%M:%S")
+        # 获取当前北京时间
+        if action:
+            current_dt = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+        else:
+            current_dt = datetime.datetime.now()
+            
+        # 计算今天的目标时间
+        target_dt = current_dt.replace(
+            hour=int(target_time.split(":")[0]),
+            minute=int(target_time.split(":")[1]),
+            second=int(target_time.split(":")[2]),
+            microsecond=0
+        )
         
-        # 如果目标时间是第二天
-        if target_dt < current_dt:
+        # 如果目标时间已过，则设为明天
+        if target_dt <= current_dt:
             target_dt += datetime.timedelta(days=1)
         
         wait_seconds = (target_dt - current_dt).total_seconds()
