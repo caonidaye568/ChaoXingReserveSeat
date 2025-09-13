@@ -229,17 +229,19 @@ class reserve:
         return tl[0]
 
     def submit(self, times, roomid, seatid, action):
+        """优化后的提交方法 - 用于兼容旧版本调用"""
+        # 临时创建验证码池进行快速提交
+        captcha = self.resolve_captcha() if self.enable_slider else ""
+        
         for seat in seatid:
-            suc = False
             attempt_count = 0
-            while not suc and attempt_count < self.max_attempt:
+            while attempt_count < self.max_attempt:
                 token, value = self._get_page_token(
                     self.url.format(roomid, seat), require_value=True
                 )
                 logging.info(f"Get token: {token}")
-                captcha = self.resolve_captcha() if self.enable_slider else ""
-                logging.info(f"Captcha token {captcha}")
-                suc = self.get_submit(
+                
+                success = self.get_submit(
                     self.submit_url,
                     times=times,
                     token=token,
@@ -249,11 +251,14 @@ class reserve:
                     action=action,
                     value=value,
                 )
-                if suc:
-                    return suc
-                time.sleep(self.sleep_time)
+                if success:
+                    return True
+                    
                 attempt_count += 1
-        return suc
+                if attempt_count < self.max_attempt:
+                    time.sleep(self.sleep_time)
+                    
+        return False
 
     def get_submit(
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
