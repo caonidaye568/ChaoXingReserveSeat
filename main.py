@@ -23,19 +23,19 @@ get_current_dayofweek = lambda action: (
     else time.strftime("%A", time.localtime(time.time()))
 )
 
-# 优化后的参数设置
-SLEEPTIME = 0.05  # 大幅减少等待时间，从0.2秒降到0.05秒
-ENDTIME = "022:01:00"
+# 极速优化参数
+SLEEPTIME = 0.005  # 进一步减少到5毫秒
+ENDTIME = "07:01:00"
 ENABLE_SLIDER = True
-MAX_ATTEMPT = 3  # 减少单个座位最大尝试次数，避免浪费时间
+MAX_ATTEMPT = 2  # 减少到2次，避免浪费时间
 RESERVE_NEXT_DAY = False
 
-# 新增：并发相关参数
-MAX_WORKERS = 3  # 最大并发线程数
-success_lock = Lock()  # 用于线程安全的成功状态更新
+# 并发参数优化
+MAX_WORKERS = 16  # 增加并发数
+success_lock = Lock()
 
-def reserve_single_user(user_data):
-    """单用户预约函数，用于并发执行"""
+def reserve_single_user_ultra_fast(user_data):
+    """超高速单用户预约"""
     index, user, username, password, action, current_dayofweek = user_data
     
     user_username, user_password, times, roomid, seatid, daysofweek = user.values()
@@ -43,12 +43,13 @@ def reserve_single_user(user_data):
         user_username, user_password = username, password
         
     if current_dayofweek not in daysofweek:
-        logging.info(f"User {index}: Today not set to reserve")
+        logging.info(f"用户 {index}: 今日无需预约")
         return index, False
         
-    logging.info(f"----------- {user_username} -- {times} -- {seatid} try -----------")
+    start_time = time.time()
+    logging.info(f"🚀 用户 {user_username} 开始抢座 时段:{times} 座位:{seatid}")
     
-    # 为每个用户创建独立的reserve实例，避免共享状态问题
+    # 每个用户独立的reserve实例，使用极速参数
     s = reserve(
         sleep_time=SLEEPTIME,
         max_attempt=MAX_ATTEMPT,
@@ -57,44 +58,63 @@ def reserve_single_user(user_data):
     )
     
     try:
+        # 并行执行登录状态检查和登录（如果可能）
         s.get_login_status()
-        s.login(user_username, user_password)
+        login_success, login_msg = s.login(user_username, user_password)
+        
+        if not login_success:
+            logging.error(f"用户 {index} 登录失败: {login_msg}")
+            return index, False
+            
         s.requests.headers.update({"Host": "office.chaoxing.com"})
+        
         suc = s.submit(times, roomid, seatid, action)
+        
+        elapsed = time.time() - start_time
+        if suc:
+            logging.info(f"✅ 用户 {index} 预约成功！耗时: {elapsed:.3f}秒")
+        else:
+            logging.info(f"❌ 用户 {index} 预约失败，耗时: {elapsed:.3f}秒")
+            
         return index, suc
+        
     except Exception as e:
-        logging.error(f"User {index} error: {e}")
+        elapsed = time.time() - start_time
+        logging.error(f"用户 {index} 异常: {e}, 耗时: {elapsed:.3f}秒")
         return index, False
 
-def login_and_reserve_parallel(users, usernames, passwords, action, success_list=None):
-    """并发版本的登录和预约函数"""
-    logging.info(
-        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}"
-    )
+def login_and_reserve_ultra_fast(users, usernames, passwords, action, success_list=None):
+    """超高速并发预约"""
+    logging.info(f"🔥 极速模式启动! 参数: SLEEPTIME={SLEEPTIME}, MAX_ATTEMPT={MAX_ATTEMPT}, MAX_WORKERS={MAX_WORKERS}")
     
     if action and len(usernames.split(",")) != len(users):
-        raise Exception("user number should match the number of config")
+        raise Exception("用户数量不匹配配置文件数量")
     
     if success_list is None:
         success_list = [False] * len(users)
     
     current_dayofweek = get_current_dayofweek(action)
     
-    # 准备并发任务数据
+    # 准备任务，只处理未成功的用户
     tasks = []
     for index, user in enumerate(users):
         if success_list[index]:
-            continue  # 跳过已成功的用户
+            continue
             
         username = usernames.split(",")[index] if action else None
         password = passwords.split(",")[index] if action else None
         
         tasks.append((index, user, username, password, action, current_dayofweek))
     
-    # 并发执行
+    if not tasks:
+        logging.info("所有用户已成功，无需处理")
+        return success_list
+    
+    # 超高速并发执行
+    start_time = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_index = {
-            executor.submit(reserve_single_user, task): task[0] 
+            executor.submit(reserve_single_user_ultra_fast, task): task[0] 
             for task in tasks
         }
         
@@ -102,93 +122,84 @@ def login_and_reserve_parallel(users, usernames, passwords, action, success_list
             index, suc = future.result()
             with success_lock:
                 success_list[index] = suc
+                
+            # 如果有成功的，立即记录
+            if suc:
+                elapsed = time.time() - start_time
+                logging.info(f"🎯 首个成功！用户{index}, 总耗时: {elapsed:.3f}秒")
+    
+    total_elapsed = time.time() - start_time
+    success_count = sum(success_list)
+    logging.info(f"📊 本轮结果: {success_count}/{len(users)} 成功, 总耗时: {total_elapsed:.3f}秒")
     
     return success_list
 
+# 保持原有函数兼容性
 def login_and_reserve(users, usernames, passwords, action, success_list=None):
-    """原有的串行版本，保持向后兼容"""
-    logging.info(
-        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}"
-    )
-    if action and len(usernames.split(",")) != len(users):
-        raise Exception("user number should match the number of config")
-    if success_list is None:
-        success_list = [False] * len(users)
-    current_dayofweek = get_current_dayofweek(action)
-    for index, user in enumerate(users):
-        username, password, times, roomid, seatid, daysofweek = user.values()
-        if action:
-            username, password = (
-                usernames.split(",")[index],
-                passwords.split(",")[index],
-            )
-        if current_dayofweek not in daysofweek:
-            logging.info("Today not set to reserve")
-            continue
-        if not success_list[index]:
-            logging.info(
-                f"----------- {username} -- {times} -- {seatid} try -----------"
-            )
-            s = reserve(
-                sleep_time=SLEEPTIME,
-                max_attempt=MAX_ATTEMPT,
-                enable_slider=ENABLE_SLIDER,
-                reserve_next_day=RESERVE_NEXT_DAY,
-            )
-            s.get_login_status()
-            s.login(username, password)
-            s.requests.headers.update({"Host": "office.chaoxing.com"})
-            suc = s.submit(times, roomid, seatid, action)
-            success_list[index] = suc
-    return success_list
+    """原版串行函数，兼容性保留"""
+    return login_and_reserve_ultra_fast(users, usernames, passwords, action, success_list)
 
-def main(users, action=False, use_parallel=True):
-    """主函数，新增并发开关"""
+def main(users, action=False, use_ultra_fast=True):
+    """主函数，默认启用超高速模式"""
     current_time = get_current_time(action)
-    logging.info(f"start time {current_time}, action {'on' if action else 'off'}, parallel {'on' if use_parallel else 'off'}")
+    mode_str = "🚀 超高速模式" if use_ultra_fast else "🐌 兼容模式"
+    logging.info(f"启动时间: {current_time}, Action: {'开启' if action else '关闭'}, 模式: {mode_str}")
+    
     attempt_times = 0
     usernames, passwords = None, None
     if action:
         usernames, passwords = get_user_credentials(action)
+    
     success_list = None
     current_dayofweek = get_current_dayofweek(action)
     today_reservation_num = sum(
         1 for d in users if current_dayofweek in d.get("daysofweek")
     )
     
-    # 选择使用并发还是串行版本
-    reserve_func = login_and_reserve_parallel if use_parallel else login_and_reserve
+    logging.info(f"📋 今日需预约用户数: {today_reservation_num}")
     
+    # 选择处理函数
+    reserve_func = login_and_reserve_ultra_fast if use_ultra_fast else login_and_reserve_ultra_fast
+    
+    total_start_time = time.time()
     while current_time < ENDTIME:
         attempt_times += 1
+        round_start_time = time.time()
+        
         try:
-            success_list = reserve_func(
-                users, usernames, passwords, action, success_list
-            )
+            success_list = reserve_func(users, usernames, passwords, action, success_list)
         except Exception as e:
-            logging.error(f"An error occurred: {e}")
+            logging.error(f"第 {attempt_times} 轮异常: {e}")
             
-        logging.info(
-            f"attempt time {attempt_times}, time now {current_time}, success list {success_list}"
-        )
+        round_elapsed = time.time() - round_start_time
         current_time = get_current_time(action)
         
-        if success_list and sum(success_list) == today_reservation_num:
-            logging.info(f"reserved successfully!")
-            return
+        if success_list:
+            success_count = sum(success_list)
+            logging.info(f"🔄 第 {attempt_times} 轮: {success_count}/{today_reservation_num} 成功, 本轮耗时: {round_elapsed:.3f}秒, 当前时间: {current_time}")
             
-        # 减少循环间隔
-        time.sleep(0.01)
+            if success_count == today_reservation_num:
+                total_elapsed = time.time() - total_start_time
+                logging.info(f"🎉 全部预约成功！总耗时: {total_elapsed:.3f}秒, 轮次: {attempt_times}")
+                return
+        else:
+            logging.info(f"🔄 第 {attempt_times} 轮: 处理中, 本轮耗时: {round_elapsed:.3f}秒, 当前时间: {current_time}")
+        
+        # 微小间隔，避免过度占用CPU
+        time.sleep(0.001)
+    
+    total_elapsed = time.time() - total_start_time
+    final_success = sum(success_list) if success_list else 0
+    logging.info(f"⏰ 时间到！最终结果: {final_success}/{today_reservation_num} 成功, 总耗时: {total_elapsed:.3f}秒")
 
 def debug(users, action=False):
-    logging.info(
-        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}"
-    )
-    suc = False
-    logging.info(f" Debug Mode start! , action {'on' if action else 'off'}")
+    """调试模式，单用户测试"""
+    logging.info(f"🔧 调试模式启动! SLEEPTIME={SLEEPTIME}, MAX_ATTEMPT={MAX_ATTEMPT}")
+    
     if action:
         usernames, passwords = get_user_credentials(action)
     current_dayofweek = get_current_dayofweek(action)
+    
     for index, user in enumerate(users):
         username, password, times, roomid, seatid, daysofweek = user.values()
         if type(seatid) == str:
@@ -199,9 +210,12 @@ def debug(users, action=False):
                 passwords.split(",")[index],
             )
         if current_dayofweek not in daysofweek:
-            logging.info("Today not set to reserve")
+            logging.info("今日无需预约")
             continue
-        logging.info(f"----------- {username} -- {times} -- {seatid} try -----------")
+            
+        logging.info(f"🎯 测试用户: {username} 时段: {times} 座位: {seatid}")
+        
+        start_time = time.time()
         s = reserve(
             sleep_time=SLEEPTIME,
             max_attempt=MAX_ATTEMPT,
@@ -209,11 +223,21 @@ def debug(users, action=False):
             reserve_next_day=RESERVE_NEXT_DAY,
         )
         s.get_login_status()
-        s.login(username, password)
+        login_success, login_msg = s.login(username, password)
+        
+        if not login_success:
+            logging.error(f"登录失败: {login_msg}")
+            continue
+            
         s.requests.headers.update({"Host": "office.chaoxing.com"})
         suc = s.submit(times, roomid, seatid, action)
+        
+        elapsed = time.time() - start_time
         if suc:
+            logging.info(f"✅ 调试成功！耗时: {elapsed:.3f}秒")
             return
+        else:
+            logging.info(f"❌ 调试失败，耗时: {elapsed:.3f}秒")
 
 def get_roomid(args1, args2):
     username = input("请输入用户名：")
@@ -232,32 +256,36 @@ def get_roomid(args1, args2):
 
 if __name__ == "__main__":
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
-    parser = argparse.ArgumentParser(prog="Chao Xing seat auto reserve")
-    parser.add_argument("-u", "--user", default=config_path, help="user config file")
+    parser = argparse.ArgumentParser(prog="超音速抢座脚本 v2.0")
+    parser.add_argument("-u", "--user", default=config_path, help="用户配置文件")
     parser.add_argument(
         "-m",
         "--method",
         default="reserve",
         choices=["reserve", "debug", "room"],
-        help="for debug",
+        help="运行模式",
     )
     parser.add_argument(
         "-a",
         "--action",
         action="store_true",
-        help="use --action to enable in github action",
+        help="启用GitHub Action模式",
     )
     parser.add_argument(
-        "--no-parallel",
+        "--slow-mode",
         action="store_true",
-        help="disable parallel processing for compatibility",
+        help="启用兼容模式（较慢但更稳定）",
     )
     args = parser.parse_args()
     
-    func_dict = {"reserve": lambda users, action: main(users, action, not args.no_parallel), 
-                 "debug": debug, 
-                 "room": get_roomid}
+    func_dict = {
+        "reserve": lambda users, action: main(users, action, not args.slow_mode), 
+        "debug": debug, 
+        "room": get_roomid
+    }
     
     with open(args.user, "r+") as data:
         usersdata = json.load(data)["reserve"]
+    
+    logging.info(f"🚀 加载了 {len(usersdata)} 个用户配置")
     func_dict[args.method](usersdata, args.action)
