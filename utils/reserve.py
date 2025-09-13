@@ -6,8 +6,6 @@ import time
 import logging
 import datetime
 from urllib3.exceptions import InsecureRequestWarning
-import concurrent.futures
-from threading import Lock
 
 
 def get_date(day_offset: int = 0):
@@ -20,7 +18,7 @@ def get_date(day_offset: int = 0):
 class reserve:
     def __init__(
         self,
-        sleep_time=0.01,  # 优化后的等待时间
+        sleep_time=0.2,
         max_attempt=50,
         enable_slider=False,
         reserve_next_day=False,
@@ -38,43 +36,26 @@ class reserve:
         self.success_times = 0
         self.fail_dict = []
         self.submit_msg = []
-        
-        # 网络优化配置
         self.requests = requests.session()
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=30,
-            pool_maxsize=30,
-            max_retries=0  # 禁用重试以节省时间
-        )
-        self.requests.mount('http://', adapter)
-        self.requests.mount('https://', adapter)
-        
-        # 设置较短的超时时间
-        self.requests.timeout = (2, 3)  # 连接超时2秒，读取超时3秒
-        
         self.token_pattern = re.compile("token = '(.*?)'")
         self.headers = {
             "Referer": "https://office.chaoxing.com/",
             "Host": "captcha.chaoxing.com",
-            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
             "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"Linux"',
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Connection": "keep-alive",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
         self.login_headers = {
             "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Cache-Control": "no-cache",
+            "accept-encoding": "gzip, deflate, br, zstd",
+            "cache-control": "no-cache",
             "Connection": "keep-alive",
             "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 10_3_1 like Mac OS X) AppleWebKit/603.1.3 (KHTML, like Gecko) Version/10.0 Mobile/14E304 Safari/602.1 wechatdevtools/1.05.2109131 MicroMessenger/8.0.5 Language/zh_CN webview/16364215743155638",
@@ -88,46 +69,27 @@ class reserve:
         self.enable_slider = enable_slider
         self.reserve_next_day = reserve_next_day
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-        
-        # 预编译正则表达式提高性能
-        self.token_regex = re.compile(r'id="submit_enc"\s+value="(.*?)"')
-        self.value_regex = re.compile(r'value="(.*?)"')
 
+    # login and page token
     def _get_page_token(self, url, require_value=False):
-        try:
-            start_time = time.time()
-            response = self.requests.get(url=url, verify=False, timeout=self.requests.timeout)
-            html = response.content.decode("utf-8")
-            
-            # 使用预编译的正则表达式
-            matches = self.token_regex.findall(html)
-            value_matches = None
-            
-            if require_value:
-                value_matches = self.value_regex.findall(html)
-                if not matches:
-                    logging.error(f"Failed to get token from {url}")
-                    return "", ""
-                if not value_matches:
-                    logging.error(f"Failed to get submit value from {url}")
-                    return matches[0], ""
-            
-            elapsed = time.time() - start_time
-            logging.info(f"Token获取耗时: {elapsed:.3f}秒")
-            return matches[0] if matches else "", value_matches[0] if value_matches else ""
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Network error in _get_page_token: {e}")
-            return "", ""
+        response = self.requests.get(url=url, verify=False)
+        html = response.content.decode("utf-8")
+        # matches = re.findall(r"token = \'(.*?)\'", html)
+        matches = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
+        value_matches = None
+        if require_value:
+            value_matches = re.findall(r'value="(.*?)"', html)
+            if not matches:
+                logging.error(f"Failed to get token from {url}")
+                return "", ""
+            if not value_matches:
+                logging.error(f"Failed to get submit value from {url}")
+                return matches[0], ""
+        return matches[0] if matches else "", value_matches[0] if value_matches else ""
 
     def get_login_status(self):
         self.requests.headers = self.login_headers
-        try:
-            start_time = time.time()
-            self.requests.get(url=self.login_page, verify=False, timeout=self.requests.timeout)
-            elapsed = time.time() - start_time
-            logging.info(f"登录状态检查耗时: {elapsed:.3f}秒")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Network error in get_login_status: {e}")
+        self.requests.get(url=self.login_page, verify=False)
 
     def login(self, username, password):
         username = AES_Encrypt(username)
@@ -139,82 +101,62 @@ class reserve:
             "refer": "http%3A%2F%2Foffice.chaoxing.com%2Ffront%2Fthird%2Fapps%2Fseat%2Fcode%3Fid%3D4219%26seatNum%3D380",
             "t": True,
         }
-        try:
-            start_time = time.time()
-            jsons = self.requests.post(url=self.login_url, params=parm, verify=False, timeout=self.requests.timeout)
-            obj = jsons.json()
-            elapsed = time.time() - start_time
-            logging.info(f"登录请求耗时: {elapsed:.3f}秒")
-            
-            if obj["status"]:
-                logging.info(f"User login successfully")
-                return (True, "")
-            else:
-                logging.info(f"User login failed. Please check password and username!")
-                return (False, obj["msg2"])
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Network error in login: {e}")
-            return (False, "Network error")
-        except json.JSONDecodeError as e:
-            logging.error(f"JSON decode error in login: {e}")
-            return (False, "Response parse error")
+        jsons = self.requests.post(url=self.login_url, params=parm, verify=False)
+        obj = jsons.json()
+        if obj["status"]:
+            logging.info(f"User {username} login successfully")
+            return (True, "")
+        else:
+            logging.info(
+                f"User {username} login failed. Please check you password and username! "
+            )
+            return (False, obj["msg2"])
 
+    # extra: get roomid
     def roomid(self, encode):
         url = f"https://office.chaoxing.com/data/apps/seat/room/list?cpage=1&pageSize=100&firstLevelName=&secondLevelName=&thirdLevelName=&deptIdEnc={encode}"
-        try:
-            json_data = self.requests.get(url=url, timeout=self.requests.timeout).content.decode("utf-8")
-            ori_data = json.loads(json_data)
-            for i in ori_data["data"]["seatRoomList"]:
-                info = f'{i["firstLevelName"]}-{i["secondLevelName"]}-{i["thirdLevelName"]} id为：{i["id"]}'
-                print(info)
-        except Exception as e:
-            logging.error(f"Error in roomid: {e}")
+        json_data = self.requests.get(url=url).content.decode("utf-8")
+        ori_data = json.loads(json_data)
+        for i in ori_data["data"]["seatRoomList"]:
+            info = f'{i["firstLevelName"]}-{i["secondLevelName"]}-{i["thirdLevelName"]} id为：{i["id"]}'
+            print(info)
+
+    # solve captcha
 
     def resolve_captcha(self):
-        """优化后的验证码解决方案"""
-        logging.info(f"开始解析验证码")
-        try:
-            start_time = time.time()
-            captcha_token, bg, tp = self.get_slide_captcha_data()
-            captcha_time = time.time() - start_time
-            logging.info(f"验证码数据获取耗时: {captcha_time:.3f}秒")
-            
-            x = self.x_distance(bg, tp)
-            calc_time = time.time() - start_time - captcha_time
-            logging.info(f"距离计算耗时: {calc_time:.3f}秒, 距离: {x}")
+        logging.info(f"Start to resolve captcha token")
+        captcha_token, bg, tp = self.get_slide_captcha_data()
+        logging.info(f"Successfully get prepared captcha_token {captcha_token}")
+        logging.info(f"Captcha Image URL-small {tp}, URL-big {bg}")
+        x = self.x_distance(bg, tp)
+        logging.info(f"Successfully calculate the captcha distance {x}")
 
-            params = {
-                "callback": "jQuery33109180509737430778_1716381333117",
-                "captchaId": "42sxgHoTPTKbt0uZxPJ7ssOvtXr3ZgZ1",
-                "type": "slide",
-                "token": captcha_token,
-                "textClickArr": json.dumps([{"x": x}]),
-                "coordinate": json.dumps([]),
-                "runEnv": "10",
-                "version": "1.1.18",
-                "_": int(time.time() * 1000),
-            }
-            response = self.requests.get(
-                f"https://captcha.chaoxing.com/captcha/check/verification/result",
-                params=params,
-                headers=self.headers,
-                timeout=self.requests.timeout
-            )
-            
-            text = response.text.replace("jQuery33109180509737430778_1716381333117(", "").replace(")", "")
-            data = json.loads(text)
-            
-            total_time = time.time() - start_time
-            logging.info(f"验证码总耗时: {total_time:.3f}秒")
-            
-            try:
-                validate_val = json.loads(data["extraData"])["validate"]
-                return validate_val
-            except KeyError as e:
-                logging.info("验证码解析失败")
-                return ""
-        except Exception as e:
-            logging.error(f"验证码解析异常: {e}")
+        params = {
+            "callback": "jQuery33109180509737430778_1716381333117",
+            "captchaId": "42sxgHoTPTKbt0uZxPJ7ssOvtXr3ZgZ1",
+            "type": "slide",
+            "token": captcha_token,
+            "textClickArr": json.dumps([{"x": x}]),
+            "coordinate": json.dumps([]),
+            "runEnv": "10",
+            "version": "1.1.18",
+            "_": int(time.time() * 1000),
+        }
+        response = self.requests.get(
+            f"https://captcha.chaoxing.com/captcha/check/verification/result",
+            params=params,
+            headers=self.headers,
+        )
+        text = response.text.replace(
+            "jQuery33109180509737430778_1716381333117(", ""
+        ).replace(")", "")
+        data = json.loads(text)
+        logging.info(f"Successfully resolve the captcha token {data}")
+        try:
+            validate_val = json.loads(data["extraData"])["validate"]
+            return validate_val
+        except KeyError as e:
+            logging.info("Can't load validate value. Maybe server return mistake.")
             return ""
 
     def get_slide_captcha_data(self):
@@ -234,10 +176,12 @@ class reserve:
             "d": "a",
             "b": "a",
         }
-        response = self.requests.get(url=url, params=params, headers=self.headers, timeout=self.requests.timeout)
+        response = self.requests.get(url=url, params=params, headers=self.headers)
         content = response.text
 
-        data = content.replace("jQuery33107685004390294206_1716461324846(", ")").replace(")", "")
+        data = content.replace(
+            "jQuery33107685004390294206_1716461324846(", ")"
+        ).replace(")", "")
         data = json.loads(data)
         captcha_token = data["token"]
         bg = data["imageVerificationVo"]["shadeImage"]
@@ -245,7 +189,6 @@ class reserve:
         return captcha_token, bg, tp
 
     def x_distance(self, bg, tp):
-        """优化后的距离计算"""
         import numpy as np
         import cv2
 
@@ -262,121 +205,69 @@ class reserve:
         c_captcha_headers = {
             "Referer": "https://office.chaoxing.com/",
             "Host": "captcha-b.chaoxing.com",
-            "Connection": "keep-alive",
-            "User-Agent": self.headers["User-Agent"],
+            "Pragma": "no-cache",
+            "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Linux"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         }
-        try:
-            # 并行下载验证码图片
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                future_bg = executor.submit(self.requests.get, bg, headers=c_captcha_headers, timeout=self.requests.timeout)
-                future_tp = executor.submit(self.requests.get, tp, headers=c_captcha_headers, timeout=self.requests.timeout)
-                
-                bgc = future_bg.result()
-                tpc = future_tp.result()
-            
-            bg_data, tp_data = bgc.content, tpc.content
-            bg_img = cv2.imdecode(np.frombuffer(bg_data, np.uint8), cv2.IMREAD_COLOR)
-            tp_img = cut_slide(tp_data)
-            
-            # 使用更快的边缘检测参数
-            bg_edge = cv2.Canny(bg_img, 50, 150)
-            tp_edge = cv2.Canny(tp_img, 50, 150)
-            
-            bg_pic = cv2.cvtColor(bg_edge, cv2.COLOR_GRAY2RGB)
-            tp_pic = cv2.cvtColor(tp_edge, cv2.COLOR_GRAY2RGB)
-            
-            res = cv2.matchTemplate(bg_pic, tp_pic, cv2.TM_CCOEFF_NORMED)
-            _, _, _, max_loc = cv2.minMaxLoc(res)
-            return max_loc[0]
-        except Exception as e:
-            logging.error(f"Error in x_distance: {e}")
-            return 0
-
-    def submit_single_seat(self, times, roomid, seat, action):
-        """优化的单座位提交"""
-        try:
-            # 获取token和验证码
-            token, value = self._get_page_token(
-                self.url.format(roomid, seat), require_value=True
-            )
-            logging.info(f"Get token for seat {seat}: {token[:20]}...")
-            
-            captcha = self.resolve_captcha() if self.enable_slider else ""
-            
-            return self.get_submit(
-                self.submit_url,
-                times=times,
-                token=token,
-                roomid=roomid,
-                seatid=seat,
-                captcha=captcha,
-                action=action,
-                value=value,
-            )
-        except Exception as e:
-            logging.error(f"座位 {seat} 提交异常: {e}")
-            return False
+        bgc, tpc = self.requests.get(bg, headers=c_captcha_headers), self.requests.get(
+            tp, headers=c_captcha_headers
+        )
+        bg, tp = bgc.content, tpc.content
+        bg_img = cv2.imdecode(np.frombuffer(bg, np.uint8), cv2.IMREAD_COLOR)
+        tp_img = cut_slide(tp)
+        bg_edge = cv2.Canny(bg_img, 100, 200)
+        tp_edge = cv2.Canny(tp_img, 100, 200)
+        bg_pic = cv2.cvtColor(bg_edge, cv2.COLOR_GRAY2RGB)
+        tp_pic = cv2.cvtColor(tp_edge, cv2.COLOR_GRAY2RGB)
+        res = cv2.matchTemplate(bg_pic, tp_pic, cv2.TM_CCOEFF_NORMED)
+        _, _, _, max_loc = cv2.minMaxLoc(res)
+        tl = max_loc
+        return tl[0]
 
     def submit(self, times, roomid, seatid, action):
-        """优化版提交方法"""
-        start_time = time.time()
-        
-        if len(seatid) == 1:
-            # 单个座位处理
-            seat = seatid[0]
-            for attempt in range(self.max_attempt):
-                try:
-                    suc = self.submit_single_seat(times, roomid, seat, action)
-                    if suc:
-                        elapsed = time.time() - start_time
-                        logging.info(f"🎉 座位预约成功！总耗时: {elapsed:.3f}秒")
-                        return suc
-                except Exception as e:
-                    logging.error(f"尝试 {attempt+1} 失败: {e}")
-                
-                if attempt < self.max_attempt - 1:
-                    time.sleep(self.sleep_time)
-        else:
-            # 多座位并发处理
-            for attempt in range(self.max_attempt):
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(seatid), 4)) as executor:
-                    futures = {
-                        executor.submit(self.submit_single_seat, times, roomid, seat, action): seat 
-                        for seat in seatid
-                    }
-                    
-                    try:
-                        for future in concurrent.futures.as_completed(futures, timeout=10):
-                            try:
-                                suc = future.result()
-                                if suc:
-                                    elapsed = time.time() - start_time
-                                    seat = futures[future]
-                                    logging.info(f"🎉 座位 {seat} 预约成功！总耗时: {elapsed:.3f}秒")
-                                    
-                                    # 取消其他任务
-                                    for f in futures:
-                                        if f != future:
-                                            f.cancel()
-                                    return suc
-                            except Exception as e:
-                                logging.error(f"并发任务执行失败: {e}")
-                    except concurrent.futures.TimeoutError:
-                        logging.warning(f"尝试 {attempt+1} 超时")
-                
-                if attempt < self.max_attempt - 1:
-                    time.sleep(self.sleep_time)
-        
-        elapsed = time.time() - start_time
-        logging.info(f"❌ 预约失败，总耗时: {elapsed:.3f}秒")
-        return False
+        for seat in seatid:
+            suc = False
+            while ~suc and self.max_attempt > 0:
+                token, value = self._get_page_token(
+                    self.url.format(roomid, seat), require_value=True
+                )
+                logging.info(f"Get token: {token}")
+                captcha = self.resolve_captcha() if self.enable_slider else ""
+                logging.info(f"Captcha token {captcha}")
+                suc = self.get_submit(
+                    self.submit_url,
+                    times=times,
+                    token=token,
+                    roomid=roomid,
+                    seatid=seat,
+                    captcha=captcha,
+                    action=action,
+                    value=value,
+                )
+                if suc:
+                    return suc
+                time.sleep(self.sleep_time)
+                self.max_attempt -= 1
+        return suc
 
-    def get_submit(self, url, times, token, roomid, seatid, captcha="", action=False, value=""):
+    def get_submit(
+        self, url, times, token, roomid, seatid, captcha="", action=False, value=""
+    ):
         delta_day = 1 if self.reserve_next_day else 0
-        day = datetime.date.today() + datetime.timedelta(days=0 + delta_day)
+        day = datetime.date.today() + datetime.timedelta(
+            days=0 + delta_day
+        )  # 预约今天，修改days=1表示预约明天
         if action:
-            day = datetime.date.today() + datetime.timedelta(days=1 + delta_day)
-            
+            day = datetime.date.today() + datetime.timedelta(
+                days=1 + delta_day
+            )  # 由于action时区问题导致其早+8区一天
         parm = {
             "roomId": roomid,
             "startTime": times[0],
@@ -388,29 +279,14 @@ class reserve:
             "type": "1",
             "verifyData": "1",
         }
-        
+        logging.info(f"submit parameter {parm} ")
+        # parm["enc"] = enc(parm)
         parm["enc"] = verify_param(parm, value)
-        
-        try:
-            start_time = time.time()
-            html = self.requests.post(
-                url=url, params=parm, verify=True, timeout=self.requests.timeout
-            ).content.decode("utf-8")
-            
-            elapsed = time.time() - start_time
-            logging.info(f"提交请求耗时: {elapsed:.3f}秒")
-            
-            result = json.loads(html)
-            self.submit_msg.append(f"{times[0]}~{times[1]}: {result}")
-            logging.info(f"提交结果: {result}")
-            return result["success"]
-            
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Network error in get_submit: {e}")
-            return False
-        except json.JSONDecodeError as e:
-            logging.error(f"JSON decode error in get_submit: {e}")
-            return False
-        except Exception as e:
-            logging.error(f"Unexpected error in get_submit: {e}")
-            return False
+        html = self.requests.post(url=url, params=parm, verify=True).content.decode(
+            "utf-8"
+        )
+        self.submit_msg.append(
+            times[0] + "~" + times[1] + ":  " + str(json.loads(html))
+        )
+        logging.info(json.loads(html))
+        return json.loads(html)["success"]
