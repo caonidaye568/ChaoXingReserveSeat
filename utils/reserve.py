@@ -8,8 +8,6 @@ import datetime
 from urllib3.exceptions import InsecureRequestWarning
 import concurrent.futures
 from threading import Lock
-import asyncio
-import aiohttp
 
 
 def get_date(day_offset: int = 0):
@@ -22,7 +20,7 @@ def get_date(day_offset: int = 0):
 class reserve:
     def __init__(
         self,
-        sleep_time=0.01,  # 进一步减少到0.01秒
+        sleep_time=0.01,  # 优化后的等待时间
         max_attempt=50,
         enable_slider=False,
         reserve_next_day=False,
@@ -41,18 +39,18 @@ class reserve:
         self.fail_dict = []
         self.submit_msg = []
         
-        # 激进的网络优化
+        # 网络优化配置
         self.requests = requests.session()
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=50,     # 大幅增加连接池
-            pool_maxsize=50,        # 大幅增加最大连接数
-            max_retries=0           # 完全禁用重试，避免浪费时间
+            pool_connections=30,
+            pool_maxsize=30,
+            max_retries=0  # 禁用重试以节省时间
         )
         self.requests.mount('http://', adapter)
         self.requests.mount('https://', adapter)
         
-        # 激进的超时设置
-        self.requests.timeout = (1, 2)  # 连接1秒，读取2秒
+        # 设置较短的超时时间
+        self.requests.timeout = (2, 3)  # 连接超时2秒，读取超时3秒
         
         self.token_pattern = re.compile("token = '(.*?)'")
         self.headers = {
@@ -91,7 +89,7 @@ class reserve:
         self.reserve_next_day = reserve_next_day
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
         
-        # 预编译正则表达式
+        # 预编译正则表达式提高性能
         self.token_regex = re.compile(r'id="submit_enc"\s+value="(.*?)"')
         self.value_regex = re.compile(r'value="(.*?)"')
 
@@ -149,10 +147,10 @@ class reserve:
             logging.info(f"登录请求耗时: {elapsed:.3f}秒")
             
             if obj["status"]:
-                logging.info(f"User {username[:10]}... login successfully")
+                logging.info(f"User login successfully")
                 return (True, "")
             else:
-                logging.info(f"User {username[:10]}... login failed. Please check password and username!")
+                logging.info(f"User login failed. Please check password and username!")
                 return (False, obj["msg2"])
         except requests.exceptions.RequestException as e:
             logging.error(f"Network error in login: {e}")
@@ -172,35 +170,17 @@ class reserve:
         except Exception as e:
             logging.error(f"Error in roomid: {e}")
 
-    def resolve_captcha_fast(self):
+    def resolve_captcha(self):
         """优化后的验证码解决方案"""
         logging.info(f"开始解析验证码")
         try:
             start_time = time.time()
             captcha_token, bg, tp = self.get_slide_captcha_data()
             captcha_time = time.time() - start_time
-            logging.info(f"验证码数据获取耗时: {captcha_time:.3f}秒, token: {captcha_token}")
+            logging.info(f"验证码数据获取耗时: {captcha_time:.3f}秒")
             
-            # 并行下载验证码图片
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                c_captcha_headers = {
-                    "Referer": "https://office.chaoxing.com/",
-                    "Host": "captcha-b.chaoxing.com",
-                    "Connection": "keep-alive",
-                    "User-Agent": self.headers["User-Agent"],
-                }
-                
-                future_bg = executor.submit(self.requests.get, bg, headers=c_captcha_headers, timeout=self.requests.timeout)
-                future_tp = executor.submit(self.requests.get, tp, headers=c_captcha_headers, timeout=self.requests.timeout)
-                
-                bgc = future_bg.result()
-                tpc = future_tp.result()
-            
-            download_time = time.time() - start_time - captcha_time
-            logging.info(f"图片下载耗时: {download_time:.3f}秒")
-            
-            x = self.x_distance_fast(bgc.content, tpc.content)
-            calc_time = time.time() - start_time - captcha_time - download_time
+            x = self.x_distance(bg, tp)
+            calc_time = time.time() - start_time - captcha_time
             logging.info(f"距离计算耗时: {calc_time:.3f}秒, 距离: {x}")
 
             params = {
@@ -237,10 +217,6 @@ class reserve:
             logging.error(f"验证码解析异常: {e}")
             return ""
 
-    def resolve_captcha(self):
-        """保持原接口兼容性"""
-        return self.resolve_captcha_fast()
-
     def get_slide_captcha_data(self):
         url = "https://captcha.chaoxing.com/captcha/get/verification/image"
         timestamp = int(time.time() * 1000)
@@ -268,7 +244,7 @@ class reserve:
         tp = data["imageVerificationVo"]["cutoutImage"]
         return captcha_token, bg, tp
 
-    def x_distance_fast(self, bg, tp):
+    def x_distance(self, bg, tp):
         """优化后的距离计算"""
         import numpy as np
         import cv2
@@ -283,28 +259,6 @@ class reserve:
             cropped_image = slider_part[y : y + h, x : x + w]
             return cropped_image
 
-        try:
-            # 直接处理图片数据，不再下载
-            bg_img = cv2.imdecode(np.frombuffer(bg, np.uint8), cv2.IMREAD_COLOR)
-            tp_img = cut_slide(tp)
-            
-            # 使用更快的边缘检测参数
-            bg_edge = cv2.Canny(bg_img, 50, 150)  # 降低阈值，提高速度
-            tp_edge = cv2.Canny(tp_img, 50, 150)
-            
-            bg_pic = cv2.cvtColor(bg_edge, cv2.COLOR_GRAY2RGB)
-            tp_pic = cv2.cvtColor(tp_edge, cv2.COLOR_GRAY2RGB)
-            
-            # 使用更快的模板匹配方法
-            res = cv2.matchTemplate(bg_pic, tp_pic, cv2.TM_CCOEFF_NORMED)
-            _, _, _, max_loc = cv2.minMaxLoc(res)
-            return max_loc[0]
-        except Exception as e:
-            logging.error(f"Error in x_distance_fast: {e}")
-            return 0
-
-    def x_distance(self, bg, tp):
-        """保持原接口兼容性"""
         c_captcha_headers = {
             "Referer": "https://office.chaoxing.com/",
             "Host": "captcha-b.chaoxing.com",
@@ -312,29 +266,42 @@ class reserve:
             "User-Agent": self.headers["User-Agent"],
         }
         try:
-            bgc, tpc = self.requests.get(bg, headers=c_captcha_headers, timeout=self.requests.timeout), \
-                      self.requests.get(tp, headers=c_captcha_headers, timeout=self.requests.timeout)
-            return self.x_distance_fast(bgc.content, tpc.content)
+            # 并行下载验证码图片
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                future_bg = executor.submit(self.requests.get, bg, headers=c_captcha_headers, timeout=self.requests.timeout)
+                future_tp = executor.submit(self.requests.get, tp, headers=c_captcha_headers, timeout=self.requests.timeout)
+                
+                bgc = future_bg.result()
+                tpc = future_tp.result()
+            
+            bg_data, tp_data = bgc.content, tpc.content
+            bg_img = cv2.imdecode(np.frombuffer(bg_data, np.uint8), cv2.IMREAD_COLOR)
+            tp_img = cut_slide(tp_data)
+            
+            # 使用更快的边缘检测参数
+            bg_edge = cv2.Canny(bg_img, 50, 150)
+            tp_edge = cv2.Canny(tp_img, 50, 150)
+            
+            bg_pic = cv2.cvtColor(bg_edge, cv2.COLOR_GRAY2RGB)
+            tp_pic = cv2.cvtColor(tp_edge, cv2.COLOR_GRAY2RGB)
+            
+            res = cv2.matchTemplate(bg_pic, tp_pic, cv2.TM_CCOEFF_NORMED)
+            _, _, _, max_loc = cv2.minMaxLoc(res)
+            return max_loc[0]
         except Exception as e:
             logging.error(f"Error in x_distance: {e}")
             return 0
 
-    def submit_single_seat_ultra_fast(self, times, roomid, seat, action):
-        """极速单座位提交"""
+    def submit_single_seat(self, times, roomid, seat, action):
+        """优化的单座位提交"""
         try:
-            # 并行获取token和验证码
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                token_future = executor.submit(self._get_page_token, self.url.format(roomid, seat), True)
-                
-                if self.enable_slider:
-                    captcha_future = executor.submit(self.resolve_captcha_fast)
-                    token, value = token_future.result()
-                    captcha = captcha_future.result()
-                else:
-                    token, value = token_future.result()
-                    captcha = ""
+            # 获取token和验证码
+            token, value = self._get_page_token(
+                self.url.format(roomid, seat), require_value=True
+            )
+            logging.info(f"Get token for seat {seat}: {token[:20]}...")
             
-            logging.info(f"座位 {seat} token: {token[:20]}...")
+            captcha = self.resolve_captcha() if self.enable_slider else ""
             
             return self.get_submit(
                 self.submit_url,
@@ -351,15 +318,15 @@ class reserve:
             return False
 
     def submit(self, times, roomid, seatid, action):
-        """极速优化版提交"""
+        """优化版提交方法"""
         start_time = time.time()
         
         if len(seatid) == 1:
-            # 单个座位快速处理
+            # 单个座位处理
             seat = seatid[0]
             for attempt in range(self.max_attempt):
                 try:
-                    suc = self.submit_single_seat_ultra_fast(times, roomid, seat, action)
+                    suc = self.submit_single_seat(times, roomid, seat, action)
                     if suc:
                         elapsed = time.time() - start_time
                         logging.info(f"🎉 座位预约成功！总耗时: {elapsed:.3f}秒")
@@ -370,16 +337,16 @@ class reserve:
                 if attempt < self.max_attempt - 1:
                     time.sleep(self.sleep_time)
         else:
-            # 多座位超高速并发
+            # 多座位并发处理
             for attempt in range(self.max_attempt):
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(seatid), 8)) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(seatid), 4)) as executor:
                     futures = {
-                        executor.submit(self.submit_single_seat_ultra_fast, times, roomid, seat, action): seat 
+                        executor.submit(self.submit_single_seat, times, roomid, seat, action): seat 
                         for seat in seatid
                     }
                     
                     try:
-                        for future in concurrent.futures.as_completed(futures, timeout=5):
+                        for future in concurrent.futures.as_completed(futures, timeout=10):
                             try:
                                 suc = future.result()
                                 if suc:
@@ -387,7 +354,7 @@ class reserve:
                                     seat = futures[future]
                                     logging.info(f"🎉 座位 {seat} 预约成功！总耗时: {elapsed:.3f}秒")
                                     
-                                    # 立即取消其他任务
+                                    # 取消其他任务
                                     for f in futures:
                                         if f != future:
                                             f.cancel()
