@@ -3,8 +3,8 @@ import time
 
 class ChaoxingAutoSign:
     def __init__(self):
-        self.username = "15115991827"
-        self.password = "10145350Lzx"
+        self.username = "18954239132"
+        self.password = "tan333888"
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 10_3_1 like Mac OS X) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.0 Mobile/14E304 Safari/602.1',
@@ -80,7 +80,7 @@ class ChaoxingAutoSign:
         else:
             print(f"[-] 签到请求失败，状态码：{res.status_code}")
 
-    def wait_until(self, target_time="09:40:00"):
+    def wait_until(self, target_time="07:40:00"):
         print(f"[+] 等待签到时间 {target_time} 中...")
         while True:
             current_time = time.strftime("%H:%M:%S", time.localtime(time.time() + 8*3600))
@@ -92,7 +92,7 @@ class ChaoxingAutoSign:
 
     def run(self):
         self.login()
-        self.wait_until(target_time="08:40:00")
+        self.wait_until(target_time="07:40:00")
         time.sleep(2)
         reserves = self.get_reserve_list()
         if not reserves:
