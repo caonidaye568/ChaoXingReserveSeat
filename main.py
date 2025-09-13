@@ -30,8 +30,8 @@ RESERVE_TARGET_TIME = "15:14:00"  # 预约开始的目标时间（北京时间�
 ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 3  # 减少重试次数，专注速度
 RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
-CAPTCHA_POOL_SIZE = 20  # 验证码池大小
-CAPTCHA_PRELOAD_TIME = 300  # 提前5分钟开始预加载验证码
+CAPTCHA_POOL_SIZE = 5  # 验证码池大小
+CAPTCHA_PRELOAD_TIME = 60  # 提前5分钟开始预加载验证码
 
 class CaptchaPool:
     """验证码缓存池"""
@@ -59,7 +59,7 @@ class CaptchaPool:
                     time.sleep(1)
         
         # 启动多个预加载线程
-        for i in range(3):
+        for i in range(1):
             thread = threading.Thread(target=preload_worker, daemon=True)
             thread.start()
     
@@ -310,7 +310,7 @@ def debug(users, action=False):
         s.requests.headers.update({"Host": "office.chaoxing.com"})
         
         # 预热并测试极速提交
-        captcha_pool = CaptchaPool(s, 5)
+        captcha_pool = CaptchaPool(s, 3)
         captcha_pool.start_preloading()
         time.sleep(3)  # 等待验证码预加载
         
