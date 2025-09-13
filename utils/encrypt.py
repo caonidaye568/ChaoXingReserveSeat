@@ -7,7 +7,6 @@ import random
 from uuid import uuid1
 import hashlib
 
-
 def AES_Encrypt(data):
     key = b"u2oh6Vu^HWe4_AES"  # Convert to bytes
     iv = b"u2oh6Vu^HWe4_AES"  # Convert to bytes
@@ -19,10 +18,8 @@ def AES_Encrypt(data):
     enctext = base64.b64encode(encrypted_data).decode("utf-8")
     return enctext
 
-
 def resort(submit_info):
     return {key: submit_info[key] for key in sorted(submit_info.keys())}
-
 
 def enc(submit_info):
     add = lambda x, y: x + y
@@ -34,7 +31,6 @@ def enc(submit_info):
     needed.append(add("[", pattern) + "]")
     seq = "".join(needed)
     return md5(seq.encode("utf-8")).hexdigest()
-
 
 def generate_captcha_key(timestamp: int):
     captcha_key = md5((str(timestamp) + str(uuid1())).encode("utf-8")).hexdigest()
@@ -52,13 +48,11 @@ def generate_captcha_key(timestamp: int):
     )
     return [captcha_key, encoded_timestamp]
 
-
 def sort_dict_by_keys(dictionary):
     """将字典按键排序并返回新字典"""
     sorted_keys = sorted(dictionary.keys())
     sorted_dict = {key: dictionary[key] for key in sorted_keys}
     return sorted_dict
-
 
 def verify_param(params, algorithm_value):
     """
