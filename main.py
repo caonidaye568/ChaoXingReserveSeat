@@ -4,6 +4,9 @@ import argparse
 import os
 import logging
 import datetime
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -12,25 +15,130 @@ logging.basicConfig(
 from utils import reserve, get_user_credentials
 
 get_current_time = lambda action: (
-    time.strftime("%H:%M:%S", time.localtime(time.time() + 8 * 3600))
+    (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%H:%M:%S")
     if action
-    else time.strftime("%H:%M:%S", time.localtime(time.time()))
+    else time.strftime("%H:%M:%S", time.localtime())
 )
 get_current_dayofweek = lambda action: (
-    time.strftime("%A", time.localtime(time.time() + 8 * 3600))
+    (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%A")
     if action
-    else time.strftime("%A", time.localtime(time.time()))
+    else time.strftime("%A", time.localtime())
 )
 
-SLEEPTIME = 0.1  # 每次抢座的间隔
-RESERVE_TARGET_TIME = "14:00:00"  # 预约开始的目标时间（北京时间）
+SLEEPTIME = 0.1  # 减少间隔时间
+RESERVE_TARGET_TIME = "14:20:00"  # 预约开始的目标时间（北京时间）
 ENABLE_SLIDER = True  # 是否有滑块验证
-MAX_ATTEMPT = 5  # 最大尝试次数
+MAX_ATTEMPT = 3  # 减少重试次数，专注速度
 RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
+CAPTCHA_POOL_SIZE = 20  # 验证码池大小
+CAPTCHA_PRELOAD_TIME = 300  # 提前5分钟开始预加载验证码
+
+class CaptchaPool:
+    """验证码缓存池"""
+    def __init__(self, session, pool_size=CAPTCHA_POOL_SIZE):
+        self.session = session
+        self.pool_size = pool_size
+        self.captcha_queue = Queue()
+        self.is_active = True
+        self.lock = threading.Lock()
+        
+    def start_preloading(self):
+        """开始预加载验证码"""
+        logging.info(f"🔄 开始预加载验证码池，目标数量: {self.pool_size}")
+        
+        def preload_worker():
+            while self.is_active and self.captcha_queue.qsize() < self.pool_size:
+                try:
+                    captcha = self.session.resolve_captcha()
+                    if captcha:
+                        self.captcha_queue.put(captcha)
+                        logging.info(f"✅ 验证码预加载成功，当前池大小: {self.captcha_queue.qsize()}")
+                    time.sleep(0.5)  # 避免请求过快
+                except Exception as e:
+                    logging.warning(f"⚠️ 验证码预加载失败: {e}")
+                    time.sleep(1)
+        
+        # 启动多个预加载线程
+        for i in range(3):
+            thread = threading.Thread(target=preload_worker, daemon=True)
+            thread.start()
+    
+    def get_captcha(self):
+        """获取一个验证码"""
+        if not self.captcha_queue.empty():
+            return self.captcha_queue.get()
+        else:
+            logging.warning("⚠️ 验证码池为空，临时生成验证码")
+            return self.session.resolve_captcha()
+    
+    def stop(self):
+        """停止预加载"""
+        self.is_active = False
+
+def warm_up_session(session, roomid, seatid):
+    """Session预热 - 模拟正常浏览行为"""
+    try:
+        logging.info("🔥 开始Session预热...")
+        # 访问座位页面
+        session.requests.get(
+            f"https://office.chaoxing.com/front/third/apps/seat/code?id={roomid}&seatNum={seatid[0]}", 
+            verify=False
+        )
+        time.sleep(0.5)
+        
+        # 访问其他相关页面
+        session.requests.get("https://office.chaoxing.com/data/apps/seat/getusedtimes", verify=False)
+        time.sleep(0.5)
+        
+        logging.info("✅ Session预热完成")
+    except Exception as e:
+        logging.warning(f"⚠️ Session预热失败: {e}")
+
+def rapid_submit_single(session, times, roomid, seatid, captcha_pool, action):
+    """极速提交单个预约"""
+    start_time = time.time()
+    
+    try:
+        # 1. 立即获取验证码（从池中取）
+        captcha = captcha_pool.get_captcha()
+        captcha_time = time.time()
+        
+        # 2. 快速获取token
+        token, value = session._get_page_token(
+            session.url.format(roomid, seatid), require_value=True
+        )
+        token_time = time.time()
+        logging.info(f"⚡ 快速获取token: {token} (耗时: {token_time - captcha_time:.2f}s)")
+        
+        # 3. 立即提交
+        success = session.get_submit(
+            session.submit_url,
+            times=times,
+            token=token,
+            roomid=roomid,
+            seatid=seatid,
+            captcha=captcha,
+            action=action,
+            value=value,
+        )
+        
+        total_time = time.time() - start_time
+        if success:
+            logging.info(f"🎉 预约成功！总耗时: {total_time:.2f}s")
+        else:
+            logging.warning(f"❌ 预约失败，总耗时: {total_time:.2f}s")
+            
+        return success
+        
+    except Exception as e:
+        total_time = time.time() - start_time
+        logging.error(f"💥 预约异常: {e}，总耗时: {total_time:.2f}s")
+        return False
 
 def pre_login_users(users, usernames, passwords, action):
-    """提前登录所有用户"""
+    """提前登录所有用户并预热"""
     logged_sessions = []
+    captcha_pools = []
     current_dayofweek = get_current_dayofweek(action)
     
     for index, user in enumerate(users):
@@ -44,6 +152,7 @@ def pre_login_users(users, usernames, passwords, action):
         if current_dayofweek not in daysofweek:
             logging.info("Today not set to reserve")
             logged_sessions.append(None)
+            captcha_pools.append(None)
             continue
             
         logging.info(f"User {username}: 提前登录中...")
@@ -60,12 +169,22 @@ def pre_login_users(users, usernames, passwords, action):
         
         if login_success:
             s.requests.headers.update({"Host": "office.chaoxing.com"})
+            
+            # Session预热
+            warm_up_session(s, roomid, seatid)
+            
+            # 创建验证码池并开始预加载
+            captcha_pool = CaptchaPool(s, CAPTCHA_POOL_SIZE)
+            captcha_pool.start_preloading()
+            
             logged_sessions.append(s)
+            captcha_pools.append(captcha_pool)
         else:
             logging.error(f"User {username} login failed: {msg}")
             logged_sessions.append(None)
+            captcha_pools.append(None)
     
-    return logged_sessions
+    return logged_sessions, captcha_pools
 
 def wait_for_target_time(target_time, action):
     """等待到达目标时间"""
@@ -97,8 +216,8 @@ def wait_for_target_time(target_time, action):
     
     logging.info(f"到达目标时间 {target_time}（北京时间），开始预约")
 
-def start_reservation(users, logged_sessions, action):
-    """开始预约"""
+def start_reservation_optimized(users, logged_sessions, captcha_pools, action):
+    """开始极速预约"""
     current_dayofweek = get_current_dayofweek(action)
     
     for index, user in enumerate(users):
@@ -108,17 +227,37 @@ def start_reservation(users, logged_sessions, action):
             continue
             
         s = logged_sessions[index]
-        if s is None:
+        captcha_pool = captcha_pools[index]
+        if s is None or captcha_pool is None:
             continue
+        
+        logging.info(f"🚀 开始极速预约 - 用户 {username}")
+        
+        # 处理时间段
+        time_slots = times if isinstance(times[0], list) else [times]
+        
+        # 快速串行提交所有时间段
+        for i, time_slot in enumerate(time_slots):
+            logging.info(f"⚡ 预约时间段 {i+1}/{len(time_slots)}: {time_slot}")
             
-        # 处理多个时间段的预约
-        if isinstance(times[0], list):  # 多个时间段
-            for time_slot in times:
-                logging.info(f"开始预约 - 用户 {username} -- {time_slot} -- 座位 {seatid}")
-                s.submit([time_slot[0], time_slot[1]], roomid, seatid, action)
-        else:  # 单个时间段
-            logging.info(f"开始预约 - 用户 {username} -- {times} -- 座位 {seatid}")
-            s.submit(times, roomid, seatid, action)
+            success = rapid_submit_single(
+                s, time_slot, roomid, seatid[0], captcha_pool, action
+            )
+            
+            if success:
+                logging.info(f"✅ 时间段 {time_slot} 预约成功！")
+            else:
+                # 快速重试一次
+                logging.info(f"🔄 时间段 {time_slot} 预约失败，快速重试...")
+                time.sleep(0.1)
+                rapid_submit_single(s, time_slot, roomid, seatid[0], captcha_pool, action)
+            
+            # 短暂间隔，避免限流
+            if i < len(time_slots) - 1:
+                time.sleep(0.2)
+        
+        # 停止验证码池
+        captcha_pool.stop()
 
 def main(users, action=False):
     current_time = get_current_time(action)
@@ -128,18 +267,18 @@ def main(users, action=False):
     if action:
         usernames, passwords = get_user_credentials(action)
     
-    # 提前登录所有用户
-    logged_sessions = pre_login_users(users, usernames, passwords, action)
+    # 提前登录所有用户并预热
+    logged_sessions, captcha_pools = pre_login_users(users, usernames, passwords, action)
     
     # 等待目标时间
     wait_for_target_time(RESERVE_TARGET_TIME, action)
     
-    # 开始预约
-    start_reservation(users, logged_sessions, action)
+    # 开始极速预约
+    start_reservation_optimized(users, logged_sessions, captcha_pools, action)
 
 def debug(users, action=False):
     logging.info(
-        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nRESERVE_TARGET_TIME: {RESERVE_TARGET_TIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}"
+        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nRESERVE_TARGET_TIME: {RESERVE_TARGET_TIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}\nCAPTCHA_POOL_SIZE: {CAPTCHA_POOL_SIZE}"
     )
     logging.info(f"Debug Mode start! , action {'on' if action else 'off'}")
     
@@ -169,9 +308,22 @@ def debug(users, action=False):
         s.get_login_status()
         s.login(username, password)
         s.requests.headers.update({"Host": "office.chaoxing.com"})
-        suc = s.submit(times, roomid, seatid, action)
-        if suc:
-            return
+        
+        # 预热并测试极速提交
+        captcha_pool = CaptchaPool(s, 5)
+        captcha_pool.start_preloading()
+        time.sleep(3)  # 等待验证码预加载
+        
+        # 测试快速预约
+        if isinstance(times[0], list):
+            for time_slot in times:
+                rapid_submit_single(s, time_slot, roomid, seatid[0], captcha_pool, action)
+                time.sleep(0.3)
+        else:
+            rapid_submit_single(s, times, roomid, seatid[0], captcha_pool, action)
+        
+        captcha_pool.stop()
+        return
 
 def get_roomid(args1, args2):
     username = input("请输入用户名：")
