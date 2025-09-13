@@ -74,6 +74,10 @@ class reserve:
         html = response.content.decode("utf-8")
         # matches = re.findall(r"token = \'(.*?)\'", html)
         matches = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
+        if not matches:
+            matches = re.findall(r"token\s*=\s*'([^']*)'", html)
+        if not matches:
+            matches = re.findall(r'name="token"\s+value="([^"]*)"', html)
         value_matches = None
         if require_value:
             value_matches = re.findall(r'value="(.*?)"', html)
