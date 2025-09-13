@@ -31,7 +31,7 @@ RESERVE_TARGET_TIME = "22:00:00"  # 预约开始的目标时间（北京时间�
 ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 2  # 减少重试次数，专注速度
 RESERVE_NEXT_DAY = True  # 预约明天而不是今天的
-CAPTCHA_POOL_SIZE = 3  # 减少验证码池大小，避免过期
+CAPTCHA_POOL_SIZE = 5  # 减少验证码池大小，避免过期
 CAPTCHA_PRELOAD_AT = "21:59:55"  # 验证码池启动时间调整到更接近预约时间
 TOKEN_REFRESH_THRESHOLD = 30  # Token刷新阈值(秒)
 # ==========================================
