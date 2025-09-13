@@ -7,13 +7,11 @@ import logging
 import datetime
 from urllib3.exceptions import InsecureRequestWarning
 
-
 def get_date(day_offset: int = 0):
     today = datetime.datetime.now().date()
     offset_day = today + datetime.timedelta(days=day_offset)
     tomorrow = offset_day.strftime("%Y-%m-%d")
     return tomorrow
-
 
 class reserve:
     def __init__(
@@ -92,19 +90,19 @@ class reserve:
         self.requests.get(url=self.login_page, verify=False)
 
     def login(self, username, password):
-        username = AES_Encrypt(username)
-        password = AES_Encrypt(password)
+        username_enc = AES_Encrypt(username)
+        password_enc = AES_Encrypt(password)
         parm = {
             "fid": -1,
-            "uname": username,
-            "password": password,
+            "uname": username_enc,
+            "password": password_enc,
             "refer": "http%3A%2F%2Foffice.chaoxing.com%2Ffront%2Fthird%2Fapps%2Fseat%2Fcode%3Fid%3D4219%26seatNum%3D380",
             "t": True,
         }
         jsons = self.requests.post(url=self.login_url, params=parm, verify=False)
         obj = jsons.json()
         if obj["status"]:
-            logging.info(f"User {username} login successfully")
+            logging.info(f"User {username_enc} login successfully")
             return (True, "")
         else:
             logging.info(
@@ -122,7 +120,6 @@ class reserve:
             print(info)
 
     # solve captcha
-
     def resolve_captcha(self):
         logging.info(f"Start to resolve captcha token")
         captcha_token, bg, tp = self.get_slide_captcha_data()
@@ -234,7 +231,8 @@ class reserve:
     def submit(self, times, roomid, seatid, action):
         for seat in seatid:
             suc = False
-            while ~suc and self.max_attempt > 0:
+            attempt_count = 0
+            while not suc and attempt_count < self.max_attempt:
                 token, value = self._get_page_token(
                     self.url.format(roomid, seat), require_value=True
                 )
@@ -254,7 +252,7 @@ class reserve:
                 if suc:
                     return suc
                 time.sleep(self.sleep_time)
-                self.max_attempt -= 1
+                attempt_count += 1
         return suc
 
     def get_submit(
