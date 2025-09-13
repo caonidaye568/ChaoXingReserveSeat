@@ -3,7 +3,7 @@
         {
             "username": "15115991827",
             "password": "10145350Lzx",
-            "time": ["13:00", "17:00"],
+            "time": ["17:00", "18:00"],
             "roomid": "6913",
             "seatid": ["019"],
             "daysofweek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -11,7 +11,7 @@
         {
             "username": "15115991827",
             "password": "10145350Lzx",
-            "time": ["9:00", "13:00"],
+            "time": ["18:00", "19:00"],
             "roomid": "6913",
             "seatid": ["019"],
             "daysofweek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -19,7 +19,7 @@
         {
             "username": "15115991827",
             "password": "10145350Lzx",
-            "time": ["17:00", "21:00"],
+            "time": ["19:00", "20:00"],
             "roomid": "6913",
             "seatid": ["019"],
             "daysofweek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
