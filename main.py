@@ -27,12 +27,12 @@ get_current_dayofweek = lambda action: (
 
 # ================= 全局参数 =================
 SLEEPTIME = 0.1  # 减少间隔时间
-RESERVE_TARGET_TIME = "17:10:00"  # 预约开始的目标时间（北京时间）
+RESERVE_TARGET_TIME = "22:00:00"  # 预约开始的目标时间（北京时间）
 ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 3  # 减少重试次数，专注速度
 RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
 CAPTCHA_POOL_SIZE = 5  # 验证码池大小
-CAPTCHA_PRELOAD_AT = "17:09:00"  # 验证码池启动时间（北京时间）
+CAPTCHA_PRELOAD_AT = "21:59:10"  # 验证码池启动时间（北京时间）
 # ==========================================
 
 
