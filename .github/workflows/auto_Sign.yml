@@ -1,0 +1,30 @@
+name: auto_Sign
+
+on:
+  schedule:
+    - cron: "30 23 * * *"  # 每天UTC时间23:30启动（北京时间7:30）
+  workflow_dispatch:
+ 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.11
+
+      - name: install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          sudo apt-get install build-essential libssl-dev libffi-dev python3-dev -y
+          pip install pycryptodome requests
+
+      - name: run auto sign script
+        env:
+          USERNAME: ${{ secrets.USERNAME }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+        run: |
+          python auto_sign.py
