@@ -7,8 +7,6 @@ import datetime
 import threading
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor
-import asyncio
-import aiohttp
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
