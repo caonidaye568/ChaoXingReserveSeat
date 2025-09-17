@@ -26,16 +26,16 @@ get_current_dayofweek = lambda action: (
 )
 
 SLEEPTIME = 0.02  # 进一步减少间隔时间
-RESERVE_TARGET_TIME = "15:13:00"  # 预约开始的目标时间（北京时间）
+RESERVE_TARGET_TIME = "15:22:00"  # 预约开始的目标时间（北京时间）
 ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 1  # 减少重试次数，专注速度
-RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
+RESERVE_NEXT_DAY = True  # 预约明天而不是今天的
 CAPTCHA_POOL_SIZE = 6  # 适中的验证码池大小
 CAPTCHA_PRELOAD_TIME = 8  # 提前8秒开始预加载验证码
 TOKEN_POOL_SIZE = 2  # 减少Token池大小避免过多请求
 
 class TokenPool:
-    """Token缓存池"""
+    """Token缓存池 - 修复时效性问题"""
     def __init__(self, session, roomid, seatid, pool_size=TOKEN_POOL_SIZE):
         self.session = session
         self.roomid = roomid
@@ -44,38 +44,57 @@ class TokenPool:
         self.token_queue = Queue()
         self.is_active = True
         self.lock = threading.Lock()
+        self._last_generate_time = 0
+        self.token_lifetime = 5  # Token有效期5秒
         
     def start_preloading(self):
-        """开始预加载token"""
-        logging.info(f"🔄 开始预加载Token池，目标数量: {self.pool_size}")
+        """开始预加载token - 延迟到最后时刻"""
+        logging.info(f"🔄 Token池准备就绪，将在需要时即时生成")
+        # 不提前预加载，避免token过期
         
-        def preload_worker():
-            while self.is_active and self.token_queue.qsize() < self.pool_size:
-                try:
-                    token, value = self.session._get_page_token(
-                        self.session.url.format(self.roomid, self.seatid), require_value=True
-                    )
-                    if token:
-                        self.token_queue.put((token, value))
-                        logging.info(f"✅ Token预加载成功: {token[:16]}..., 当前池大小: {self.token_queue.qsize()}")
-                    time.sleep(0.1)  # 避免请求过快
-                except Exception as e:
-                    logging.warning(f"⚠️ Token预加载失败: {e}")
-                    time.sleep(0.5)
-        
-        # 启动预加载线程
-        thread = threading.Thread(target=preload_worker, daemon=True)
-        thread.start()
-    
-    def get_token(self):
-        """获取一个token"""
-        if not self.token_queue.empty():
-            return self.token_queue.get()
-        else:
-            logging.warning("⚠️ Token池为空，临时生成Token")
-            return self.session._get_page_token(
+    def _generate_fresh_token(self):
+        """生成新的token"""
+        try:
+            current_time = time.time()
+            token, value = self.session._get_page_token(
                 self.session.url.format(self.roomid, self.seatid), require_value=True
             )
+            self._last_generate_time = current_time
+            return token, value
+        except Exception as e:
+            logging.error(f"生成Token失败: {e}")
+            return "", ""
+    
+    def get_token(self):
+        """获取一个token - 确保新鲜度"""
+        current_time = time.time()
+        
+        # 检查队列中是否有新鲜的token
+        if not self.token_queue.empty():
+            token, value, generate_time = self.token_queue.get()
+            # 检查token是否还新鲜（5秒内生成的）
+            if current_time - generate_time < self.token_lifetime:
+                logging.info(f"✅ 使用池中新鲜Token: {token[:16]}..., 年龄: {current_time - generate_time:.1f}s")
+                return token, value
+            else:
+                logging.warning(f"⚠️ 池中Token已过期，重新生成")
+        
+        # 生成新token
+        logging.info("⚡ 即时生成新Token")
+        token, value = self._generate_fresh_token()
+        return token, value
+    
+    def preload_for_immediate_use(self):
+        """为即将到来的提交预加载少量token"""
+        if self.token_queue.qsize() < 2:  # 只保持2个新鲜token
+            try:
+                current_time = time.time()
+                token, value = self._generate_fresh_token()
+                if token:
+                    self.token_queue.put((token, value, current_time))
+                    logging.info(f"✅ 预加载新鲜Token: {token[:16]}..., 当前池大小: {self.token_queue.qsize()}")
+            except Exception as e:
+                logging.warning(f"⚠️ Token预加载失败: {e}")
     
     def stop(self):
         """停止预加载"""
@@ -321,6 +340,11 @@ def start_reservation_ultra_fast(users, logged_sessions, captcha_pools, token_po
         # 处理时间段
         time_slots = times if isinstance(times[0], list) else [times]
         
+        # 在开始预约前，为每个时间段预加载一个新鲜token
+        for i in range(min(len(time_slots), 2)):
+            token_pool.preload_for_immediate_use()
+            time.sleep(0.1)  # 稍微间隔一下
+        
         # 串行提交所有时间段（避免被检测）
         for i, time_slot in enumerate(time_slots):
             logging.info(f"⚡ 预约时间段 {i+1}/{len(time_slots)}: {time_slot}")
@@ -337,6 +361,8 @@ def start_reservation_ultra_fast(users, logged_sessions, captcha_pools, token_po
             # 适当间隔，避免被检测为机器人
             if i < len(time_slots) - 1:
                 time.sleep(0.1)  # 100ms间隔
+                # 为下一个时间段预加载新token
+                token_pool.preload_for_immediate_use()
         
         # 停止资源池
         captcha_pool.stop()
