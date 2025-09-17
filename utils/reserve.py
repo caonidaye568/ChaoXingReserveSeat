@@ -112,36 +112,49 @@ class reserve:
         """优化的token获取方法"""
         try:
             start_time = time.time()
-            response = self.requests.get(url=url, verify=False)
+            response = self.requests.get(url=url, verify=False, timeout=(2, 5))  # 缩短超时
             html = response.content.decode("utf-8")
             
-            # 优化正则匹配
+            # 优化正则匹配，按优先级顺序尝试
             matches = []
             patterns = [
-                r'id="submit_enc"\s+value="(.*?)"',
-                r"token\s*=\s*'([^']*)'",
-                r'name="token"\s+value="([^"]*)"'
+                r'id="submit_enc"\s+value="([^"]*)"',  # 最常见的模式
+                r'name="token"\s+value="([^"]*)"',     # 备选模式1  
+                r"token\s*=\s*'([^']*)'",              # 备选模式2
             ]
             
-            for pattern in patterns:
+            for i, pattern in enumerate(patterns):
                 matches = re.findall(pattern, html)
                 if matches:
+                    logging.debug(f"Token匹配成功，使用模式{i+1}")
                     break
             
             value_matches = None
             if require_value:
-                value_matches = re.findall(r'value="(.*?)"', html)
+                value_patterns = [
+                    r'id="submit_enc"\s+value="([^"]*)"',  # 首先尝试submit_enc
+                    r'value="([^"]*)"'  # 通用value匹配
+                ]
+                
+                for pattern in value_patterns:
+                    value_matches = re.findall(pattern, html)
+                    if value_matches:
+                        break
+                        
                 if not matches:
                     logging.error(f"Failed to get token from {url}")
                     return "", ""
                 if not value_matches:
-                    logging.error(f"Failed to get submit value from {url}")
-                    return matches[0], ""
+                    logging.warning(f"Failed to get submit value from {url}, using token as value")
+                    value_matches = matches  # 使用token作为value的备选方案
             
             end_time = time.time()
-            logging.debug(f"Token获取耗时: {end_time - start_time:.3f}s")
+            token_str = matches[0] if matches else ""
+            value_str = value_matches[0] if value_matches else ""
             
-            return matches[0] if matches else "", value_matches[0] if value_matches else ""
+            logging.debug(f"Token获取耗时: {end_time - start_time:.3f}s, token长度: {len(token_str)}, value长度: {len(value_str)}")
+            
+            return token_str, value_str
             
         except Exception as e:
             logging.error(f"获取token时发生异常: {e}")
