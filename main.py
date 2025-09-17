@@ -36,7 +36,7 @@ def get_target_date(action=False):
     return target_dt.strftime("%Y-%m-%d")
 
 # --- 全局配置 (进一步优化的参数) ---
-RESERVE_TARGET_TIME = "18:39:00"
+RESERVE_TARGET_TIME = "18:57:00"
 ENABLE_SLIDER = True
 RESERVE_NEXT_DAY = False
 POOL_SIZE = 5  # 进一步减少池大小
