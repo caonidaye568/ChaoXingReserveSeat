@@ -26,11 +26,11 @@ get_current_dayofweek = lambda action: (
     else time.strftime("%A", time.localtime())
 )
 
-SLEEPTIME = 0.1
-RESERVE_TARGET_TIME = "22:00:00"
+SLEEPTIME = 0.0
+RESERVE_TARGET_TIME = "18:16:00"
 ENABLE_SLIDER = True
 MAX_ATTEMPT = 1
-RESERVE_NEXT_DAY = True
+RESERVE_NEXT_DAY = False
 CAPTCHA_POOL_SIZE = 5
 CAPTCHA_PRELOAD_TIME = 5
 
