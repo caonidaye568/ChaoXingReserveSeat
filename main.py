@@ -25,7 +25,7 @@ get_current_dayofweek = lambda action: (
 )
 
 SLEEPTIME = 0.05
-RESERVE_TARGET_TIME = "19:35:00"
+RESERVE_TARGET_TIME = "19:42:00"
 ENABLE_SLIDER = True
 MAX_ATTEMPT = 1
 RESERVE_NEXT_DAY = False
@@ -136,7 +136,7 @@ def rapid_submit_single(session, times, roomid, seatid, captcha_pool, token_pool
         token, value = token_pool.get_token()
         logging.info(f"⚡ 使用token: {token}")
 
-        success, resp = session.get_submit(
+        success = session.get_submit(
             session.submit_url,
             times=times,
             token=token,
@@ -145,23 +145,7 @@ def rapid_submit_single(session, times, roomid, seatid, captcha_pool, token_pool
             captcha=captcha,
             action=action,
             value=value,
-            return_resp=True,  # 需要在 utils.reserve.get_submit 里支持
         )
-
-        # 容错：303 错误时立刻刷新 token 重试一次
-        if not success and resp and "303" in str(resp):
-            logging.warning("⚠️ Token过期，立即刷新重试")
-            token, value = session._get_page_token(session.url.format(roomid, seatid), require_value=True)
-            success = session.get_submit(
-                session.submit_url,
-                times=times,
-                token=token,
-                roomid=roomid,
-                seatid=seatid,
-                captcha=captcha,
-                action=action,
-                value=value,
-            )
 
         total_time = time.time() - start_time
         if success:
@@ -209,7 +193,7 @@ def pre_login_users(users, usernames, passwords, action):
             s.requests.headers.update({"Host": "office.chaoxing.com"})
             warm_up_session(s, roomid, seatid)
 
-            # 此时不启动池子，推迟到 wait_for_target_time 里
+            # 登录后只实例化，不启动池子
             captcha_pool = CaptchaPool(s, CAPTCHA_POOL_SIZE)
             token_pool = TokenPool(s, roomid, seatid[0], TOKEN_POOL_SIZE)
 
