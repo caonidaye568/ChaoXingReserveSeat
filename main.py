@@ -35,18 +35,18 @@ def get_target_date(action=False):
         target_dt += datetime.timedelta(days=1)
     return target_dt.strftime("%Y-%m-%d")
 
-# --- 全局配置 (优化后的参数) ---
-RESERVE_TARGET_TIME = "18:50:00"
+# --- 全局配置 (进一步优化的参数) ---
+RESERVE_TARGET_TIME = "18:39:00"
 ENABLE_SLIDER = True
 RESERVE_NEXT_DAY = False
-POOL_SIZE = 8  # 减少池大小，避免服务器过载
-PRELOAD_START_SECONDS = 3  # 减少预加载时间，防止token过期
-MAX_TOKEN_AGE = 2  # Token最大存活时间（秒）
-MAX_CAPTCHA_AGE = 4  # 验证码最大存活时间（秒）
-MAX_CONCURRENT_THREADS = 2  # 减少并发线程数
+POOL_SIZE = 5  # 进一步减少池大小
+PRELOAD_START_SECONDS = 1.5  # 进一步缩短预加载时间
+MAX_TOKEN_AGE = 1.0  # 极短的Token有效期
+MAX_CAPTCHA_AGE = 2.0  # 极短的验证码有效期
+MAX_CONCURRENT_THREADS = 1  # 单线程提交，避免冲突
 
 class ResourcePool:
-    """优化的资源池，支持新鲜度检查和时间戳"""
+    """修复了数据格式问题的资源池"""
     def __init__(self, name, base_session, pool_size, target_func):
         self.name = name
         self.base_session = base_session
@@ -57,31 +57,28 @@ class ResourcePool:
         self.lock = threading.Lock()
 
     def _preload_worker(self):
-        """预加载工作线程，添加时间戳"""
+        """预加载工作线程"""
         while self.is_active and self.queue.qsize() < self.pool_size:
             try:
                 session_copy = copy.deepcopy(self.base_session)
                 resource = self.target_func(session_copy)
                 if resource:
-                    # 为资源添加时间戳
+                    # 确保资源格式正确
                     timestamped_resource = self._add_timestamp(resource)
                     with self.lock:
                         if self.queue.qsize() < self.pool_size:
                             self.queue.put(timestamped_resource)
                             logging.info(f"✅ {self.name}预加载成功，当前池大小: {self.queue.qsize()}")
                 else:
-                    time.sleep(0.05 + random.uniform(0, 0.05))  # 添加随机抖动
+                    time.sleep(0.02)
             except Exception as e:
                 logging.warning(f"⚠️ {self.name}预加载线程异常: {e}")
-                time.sleep(0.2 + random.uniform(0, 0.1))
+                time.sleep(0.1)
 
     def _add_timestamp(self, resource):
-        """为资源添加时间戳"""
+        """为资源添加时间戳，修复格式问题"""
         current_time = time.time()
-        if isinstance(resource, tuple):
-            return (*resource, current_time)
-        else:
-            return (resource, current_time)
+        return (resource, current_time)
 
     def _is_fresh(self, resource, max_age):
         """检查资源是否新鲜"""
@@ -96,9 +93,8 @@ class ResourcePool:
             return
         logging.info(f"🔄 启动{self.name}池预加载，目标数量: {self.pool_size}")
         self.is_active = True
-        # 使用适量线程并行预加载
-        thread_count = min(3, self.pool_size // 2 + 1)
-        for _ in range(thread_count):
+        # 使用单个线程预加载
+        for _ in range(2):
             thread = threading.Thread(target=self._preload_worker, daemon=True)
             thread.start()
 
@@ -107,169 +103,183 @@ class ResourcePool:
         self.is_active = False
         logging.info(f"🛑 {self.name}池停止预加载.")
 
-    def get_fresh(self, max_age_seconds=None):
-        """获取新鲜资源，如果过期则重新生成"""
+    def get_fresh_or_generate(self, max_age_seconds=None):
+        """获取新鲜资源，如果没有就立即生成"""
         if max_age_seconds is None:
             max_age_seconds = MAX_TOKEN_AGE if self.name == "Token" else MAX_CAPTCHA_AGE
 
-        # 尝试从池中获取新鲜资源
+        # 立即生成新资源，不使用可能过期的预加载资源
+        logging.info(f"⚡ 为确保新鲜度，立即生成{self.name}...")
+        try:
+            session_copy = copy.deepcopy(self.base_session)
+            fresh_resource = self.target_func(session_copy)
+            return fresh_resource
+        except Exception as e:
+            logging.error(f"💥 生成{self.name}失败: {e}")
+            # 如果生成失败，尝试从池中获取
+            return self._get_from_pool(max_age_seconds)
+
+    def _get_from_pool(self, max_age_seconds):
+        """从池中获取资源作为备用"""
         attempts = 0
-        while not self.queue.empty() and attempts < 5:
+        while not self.queue.empty() and attempts < 3:
             try:
                 with self.lock:
                     if not self.queue.empty():
                         resource = self.queue.get_nowait()
                         if self._is_fresh(resource, max_age_seconds):
-                            # 返回去掉时间戳的资源
-                            return resource[:-1] if len(resource) > 1 else resource[0]
+                            return resource[0]  # 返回去掉时间戳的资源
                 attempts += 1
             except:
                 break
-
-        # 如果没有新鲜资源，立即生成新的
-        logging.warning(f"⚠️ {self.name}池无新鲜资源，正在紧急生成...")
-        try:
-            session_copy = copy.deepcopy(self.base_session)
-            return self.target_func(session_copy)
-        except Exception as e:
-            logging.error(f"💥 紧急生成{self.name}失败: {e}")
-            return None
+        return None
 
     def get(self):
         """向后兼容的get方法"""
-        return self.get_fresh()
+        return self.get_fresh_or_generate()
 
-def refresh_session(session, roomid, seatid):
-    """在关键操作前刷新session"""
+def refresh_session_advanced(session, roomid, seatid):
+    """高级session刷新，包含多个步骤"""
     try:
-        session.requests.get(
-            f"https://office.chaoxing.com/front/third/apps/seat/code?id={roomid}&seatNum={seatid}",
-            verify=False,
-            timeout=3
-        )
-        logging.info("🔄 Session刷新成功")
+        # 1. 刷新主页面
+        session.requests.get("https://office.chaoxing.com/", verify=False, timeout=3)
+        
+        # 2. 刷新座位页面
+        seat_url = f"https://office.chaoxing.com/front/third/apps/seat/code?id={roomid}&seatNum={seatid}"
+        response = session.requests.get(seat_url, verify=False, timeout=3)
+        
+        # 3. 短暂延迟
+        time.sleep(0.05)
+        
+        logging.info("🔄 高级Session刷新成功")
         return True
     except Exception as e:
-        logging.warning(f"⚠️ Session刷新失败: {e}")
+        logging.warning(f"⚠️ 高级Session刷新失败: {e}")
         return False
 
+def extract_data_safely(data):
+    """安全地提取数据，修复格式问题"""
+    if isinstance(data, tuple):
+        if len(data) == 1:
+            return data[0]
+        elif len(data) >= 2:
+            return data[0], data[1]
+    return data
+
 def lightning_submit_worker(base_session, times, roomid, seatid, captcha_pool, token_pool, action):
-    """优化的闪电突袭工作线程"""
+    """完全修复的闪电突袭工作线程"""
+    # 使用独立的session副本
     session_copy = copy.deepcopy(base_session)
     
     try:
-        # 在提交前获取最新鲜的资源
-        captcha = captcha_pool.get_fresh(max_age_seconds=MAX_CAPTCHA_AGE)
-        token_data = token_pool.get_fresh(max_age_seconds=MAX_TOKEN_AGE)
+        # 立即获取最新的资源
+        captcha_raw = captcha_pool.get_fresh_or_generate()
+        token_raw = token_pool.get_fresh_or_generate()
         
-        if not captcha or not token_data:
-            logging.error(f"💥 (线程 {times[0]}-{times[1]}) 无法获取有效的验证码或Token")
+        if not captcha_raw or not token_raw:
+            logging.error(f"💥 (线程 {times[0]}-{times[1]}) 无法获取有效资源")
             return False
 
+        # 安全地提取数据
+        captcha = extract_data_safely(captcha_raw)
+        token_data = extract_data_safely(token_raw)
+        
+        # 确保captcha是字符串
+        if isinstance(captcha, tuple):
+            captcha = captcha[0]
+        
+        # 确保token_data格式正确
         if isinstance(token_data, tuple) and len(token_data) >= 2:
             token, value = token_data[0], token_data[1]
         else:
-            token, value = token_data, "1"
-
-        # 记录提交参数（用于调试）
+            token = token_data
+            value = "1"
+        
+        # 记录提交参数
         submit_params = {
-            'roomId': roomid, 
-            'startTime': times[0], 
-            'endTime': times[1], 
+            'roomId': str(roomid), 
+            'startTime': str(times[0]), 
+            'endTime': str(times[1]), 
             'day': get_target_date(action), 
-            'seatNum': seatid, 
-            'captcha': captcha, 
-            'token': token, 
+            'seatNum': str(seatid), 
+            'captcha': str(captcha), 
+            'token': str(token), 
             'type': '1', 
-            'verifyData': value
+            'verifyData': str(value)
         }
         logging.info(f"submit parameter {submit_params}")
 
-        # 执行提交，添加重试机制
-        success = submit_with_retry(session_copy, times, token, roomid, seatid, captcha, action, value)
-        return success
+        # 提交前微延迟
+        time.sleep(0.001)
         
+        # 执行提交
+        start_time = time.time()
+        success = session_copy.get_submit(
+            session_copy.submit_url, 
+            times=times, 
+            token=token, 
+            roomid=roomid,
+            seatid=seatid, 
+            captcha=captcha, 
+            action=action, 
+            value=value,
+        )
+        elapsed_time = time.time() - start_time
+        
+        if success:
+            logging.info(f"✅ 提交成功! 耗时: {elapsed_time:.3f}s")
+            return True
+        else:
+            logging.warning(f"❌ 提交失败，耗时: {elapsed_time:.3f}s")
+            return False
+            
     except Exception as e:
-        logging.error(f"💥 (线程 {times[0]}-{times[1]}) 提交时异常: {e}")
+        logging.error(f"💥 (线程 {times[0]}-{times[1]}) 提交异常: {e}")
         return False
 
-def submit_with_retry(session, times, token, roomid, seatid, captcha, action, value, max_retries=1):
-    """带重试机制的提交函数"""
-    for attempt in range(max_retries + 1):
-        try:
-            start_time = time.time()
-            success = session.get_submit(
-                session.submit_url, times=times, token=token, roomid=roomid,
-                seatid=seatid, captcha=captcha, action=action, value=value,
-            )
-            elapsed_time = time.time() - start_time
-            
-            if success:
-                logging.info(f"✅ 提交成功! 耗时: {elapsed_time:.3f}s")
-                return True
-            elif attempt < max_retries:
-                logging.info(f"🔄 第 {attempt + 1} 次提交失败，{0.05}秒后重试...")
-                time.sleep(0.05)
-                
-        except Exception as e:
-            if attempt < max_retries:
-                logging.warning(f"⚠️ 第 {attempt + 1} 次提交异常，准备重试: {e}")
-                time.sleep(0.05)
-            else:
-                logging.error(f"💥 所有重试均失败: {e}")
-    
-    return False
-
 def start_lightning_reservation(user_info, base_session, captcha_pool, token_pool, action):
-    """优化的闪电预约函数"""
+    """修复的闪电预约函数 - 序列化提交避免冲突"""
     username = user_info['username']
     times = user_info['times']
     roomid = user_info['roomid']
     seatid = user_info['seatid']
     
-    # 在提交前刷新session
-    refresh_session(base_session, roomid, seatid[0])
+    # 高级session刷新
+    refresh_session_advanced(base_session, roomid, seatid[0])
     
-    logging.info(f"🚀 用户 {username} 所有线程准备就绪, 开始闪电突袭!")
+    logging.info(f"🚀 用户 {username} 准备序列化提交!")
     time_slots = times if isinstance(times[0], list) else [times]
     
-    # 限制并发线程数
-    max_workers = min(len(time_slots), MAX_CONCURRENT_THREADS)
+    # 序列化提交，避免并发冲突
+    successful_slots = []
+    for i, slot in enumerate(time_slots):
+        try:
+            logging.info(f"📍 正在提交第 {i+1}/{len(time_slots)} 个时间段: {slot}")
+            
+            # 每次提交前添加小延迟
+            if i > 0:
+                time.sleep(0.05)
+            
+            success = lightning_submit_worker(
+                base_session, slot, roomid, seatid[0], 
+                captcha_pool, token_pool, action
+            )
+            
+            if success:
+                successful_slots.append(slot)
+                logging.info(f"🎉 时间段 {slot} 预约成功!")
+                # 成功后可以选择继续或停止
+                # break  # 如果只要一个成功就够了，可以取消注释
+            else:
+                logging.warning(f"😞 时间段 {slot} 预约失败")
+                
+        except Exception as e:
+            logging.error(f"处理时间段 {slot} 时出错: {e}")
     
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for i, slot in enumerate(time_slots):
-            try:
-                # 添加小的延迟避免同时提交
-                if i > 0:
-                    time.sleep(0.01)
-                    
-                future = executor.submit(
-                    lightning_submit_worker, 
-                    base_session, slot, roomid, seatid[0], 
-                    captcha_pool, token_pool, action
-                )
-                futures.append(future)
-            except Exception as e:
-                logging.error(f"为时间段 {slot} 分配任务时出错: {e}")
-
-        # 等待所有任务完成
-        wait(futures)
-
-        # 统计结果
-        successful_slots = []
-        for i, future in enumerate(futures):
-            if future.done():
-                try:
-                    if future.result():
-                        successful_slots.append(time_slots[i])
-                except Exception as e:
-                    logging.error(f"获取线程结果时出错: {e}")
-        
-        if successful_slots:
-            logging.info(f"🎉 胜利! 用户 {username} 成功预约 {len(successful_slots)} 个时间段: {successful_slots}")
-        else:
-            logging.warning(f"😞 任务结束. 用户 {username} 所有时间段预约均失败.")
+    if successful_slots:
+        logging.info(f"🎉 胜利! 用户 {username} 成功预约 {len(successful_slots)} 个时间段: {successful_slots}")
+    else:
+        logging.warning(f"😞 任务结束. 用户 {username} 所有时间段预约均失败.")
 
 def pre_login_user(user, usernames, passwords, action, index):
     """预登录用户"""
@@ -302,15 +312,10 @@ def pre_login_user(user, usernames, passwords, action, index):
         logging.error(f"❌ 用户 {username} 登录失败: {msg}")
         return None
 
-def log_pool_status(captcha_pools, token_pools):
-    """记录资源池状态（调试用）"""
-    for i, (cp, tp) in enumerate(zip(captcha_pools, token_pools)):
-        if cp and tp:
-            logging.info(f"用户 {i+1} - 验证码池: {cp.queue.qsize()}, Token池: {tp.queue.qsize()}")
-
 def main(users, action=False):
     logging.info(f"程序启动 (action={'on' if action else 'off'})")
-    logging.info(f"配置参数 - 池大小: {POOL_SIZE}, 预加载时间: {PRELOAD_START_SECONDS}秒, Token有效期: {MAX_TOKEN_AGE}秒")
+    logging.info(f"优化配置 - 池大小: {POOL_SIZE}, 预加载时间: {PRELOAD_START_SECONDS}秒")
+    logging.info(f"资源有效期 - Token: {MAX_TOKEN_AGE}秒, 验证码: {MAX_CAPTCHA_AGE}秒")
     
     usernames, passwords = get_user_credentials(action) if action else (None, None)
 
@@ -369,40 +374,20 @@ def main(users, action=False):
         wait_seconds = (target_dt - now_dt).total_seconds()
         if wait_seconds > 0:
             logging.info(f"距离目标时间 {RESERVE_TARGET_TIME} 还剩 {wait_seconds:.1f} 秒, 精准等待中...")
-            # 在等待期间监控池状态
-            sleep_interval = 0.5
-            slept_time = 0
-            while slept_time < wait_seconds:
-                time.sleep(min(sleep_interval, wait_seconds - slept_time))
-                slept_time += sleep_interval
-                if slept_time % 2 < sleep_interval:  # 每2秒记录一次状态
-                    log_pool_status(captcha_pools, token_pools)
+            time.sleep(wait_seconds)
     
     # 精确等待到目标时间
     while get_now(action) < target_dt:
-        time.sleep(0.001)
+        time.sleep(0.0001)
 
-    logging.info(f"到达目标时间 {RESERVE_TARGET_TIME}, 所有用户总攻开始!")
+    logging.info(f"到达目标时间 {RESERVE_TARGET_TIME}, 开始精确打击!")
 
-    # 对每个用户发起总攻
-    reservation_threads = []
+    # 序列化处理每个用户（避免并发冲突）
     for i, session in enumerate(user_sessions):
         if session and captcha_pools[i] and token_pools[i]:
-            # 为每个用户创建单独的线程，避免阻塞
-            thread = threading.Thread(
-                target=start_lightning_reservation,
-                args=(users[i], session, captcha_pools[i], token_pools[i], action),
-                daemon=True
-            )
-            reservation_threads.append(thread)
-            thread.start()
-            
-            # 添加小延迟避免同时开始
+            start_lightning_reservation(users[i], session, captcha_pools[i], token_pools[i], action)
+            # 用户之间添加小延迟
             time.sleep(0.01)
-    
-    # 等待所有预约线程完成
-    for thread in reservation_threads:
-        thread.join(timeout=10)  # 最多等待10秒
 
     # 停止所有资源池
     for pool in active_pools:
