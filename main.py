@@ -26,7 +26,7 @@ get_current_dayofweek = lambda action: (
 )
 
 SLEEPTIME = 0.02  # 进一步减少间隔时间
-RESERVE_TARGET_TIME = "15:29:00"  # 预约开始的目标时间（北京时间）
+RESERVE_TARGET_TIME = "15:44:00"  # 预约开始的目标时间（北京时间）
 ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 1  # 减少重试次数，专注速度
 RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
@@ -166,15 +166,15 @@ def ultra_fast_submit(session, times, roomid, seatid, captcha_pool, token_pool, 
     start_time = time.time()
     
     try:
-        # 1. 快速获取验证码（从池中取）
-        captcha_start = time.time()
-        captcha = captcha_pool.get_captcha()
-        captcha_time = time.time() - captcha_start
-        
-        # 2. 快速获取token（从池中取）
+        # 1. 快速获取token（从池中取），token预加载依然有效
         token_start = time.time()
         token, value = token_pool.get_token()
         token_time = time.time() - token_start
+
+        # 2. 【关键修改】在获取token后，立即实时生成验证码
+        captcha_start = time.time()
+        captcha = session.resolve_captcha() # <--- 直接调用session的方法实时生成
+        captcha_time = time.time() - captcha_start
         
         prep_time = time.time()
         logging.info(f"⚡ 超快速准备完成: token={token[:16]}... (验证码:{captcha_time:.2f}s, token:{token_time:.2f}s)")
