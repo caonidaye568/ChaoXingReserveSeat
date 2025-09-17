@@ -28,7 +28,7 @@ def get_current_dayofweek(action=False):
     return get_now(action).strftime("%A")
 
 # --- 全局配置 ---
-RESERVE_TARGET_TIME = "18:35:00"
+RESERVE_TARGET_TIME = "18:39:00"
 ENABLE_SLIDER = True
 RESERVE_NEXT_DAY = False
 POOL_SIZE = 15  # 验证码和Token池的大小
