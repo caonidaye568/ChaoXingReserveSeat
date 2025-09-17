@@ -26,7 +26,7 @@ get_current_dayofweek = lambda action: (
 )
 
 SLEEPTIME = 0.02
-RESERVE_TARGET_TIME = "16:04:00"  # 【重要】请根据你学校的实际情况修改
+RESERVE_TARGET_TIME = "16:09:00"  # 【重要】请根据你学校的实际情况修改
 ENABLE_SLIDER = True
 MAX_ATTEMPT = 1
 RESERVE_NEXT_DAY = False # 【重要】如果预约第二天，请改为 True
@@ -235,7 +235,8 @@ def pre_login_users(users, usernames, passwords, action):
     
     return logged_sessions, captcha_pools, token_pools
 
-def wait_for_time(target_dt, message):
+# 【修正】增加 action 参数
+def wait_for_time(target_dt, message, action):
     """等待到指定datetime对象的时间"""
     if action:
         now_dt = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
@@ -244,7 +245,9 @@ def wait_for_time(target_dt, message):
 
     wait_seconds = (target_dt - now_dt).total_seconds()
     if wait_seconds > 0:
-        logging.info(message.format(wait_seconds, CAPTCHA_PRELOAD_TIME))
+        # 【修正】将 CAPTCHA_PRELOAD_TIME 替换为 TOKEN_REFRESH_TIME 来适配两种消息
+        log_message = message.format(wait_seconds, CAPTCHA_PRELOAD_TIME if '验证码' in message else TOKEN_REFRESH_TIME)
+        logging.info(log_message)
         time.sleep(wait_seconds)
 
 def start_reservation_ultra_fast(users, logged_sessions, captcha_pools, token_pools, action):
@@ -285,7 +288,6 @@ def main(users, action=False):
     
     logged_sessions, captcha_pools, token_pools = pre_login_users(users, usernames, passwords, action)
     
-    # 【核心修改】分离启动时机
     if action:
         current_dt = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
     else:
@@ -298,20 +300,23 @@ def main(users, action=False):
 
     # 1. 计算并等待到验证码预加载时间
     captcha_start_dt = target_dt - datetime.timedelta(seconds=CAPTCHA_PRELOAD_TIME)
-    wait_for_time(captcha_start_dt, "将在 {:.1f} 秒后启动验证码池 (目标时间前{}s)")
+    # 【修正】传入 action
+    wait_for_time(captcha_start_dt, "将在 {:.1f} 秒后启动验证码池 (目标时间前{}s)", action)
     for captcha_pool in captcha_pools:
         if captcha_pool: captcha_pool.start_preloading()
     logging.info("✅ 验证码池已启动")
 
     # 2. 计算并等待到Token刷新时间
     token_start_dt = target_dt - datetime.timedelta(seconds=TOKEN_REFRESH_TIME)
-    wait_for_time(token_start_dt, "将在 {:.1f} 秒后刷新Token池 (目标时间前{}s)")
+    # 【修正】传入 action
+    wait_for_time(token_start_dt, "将在 {:.1f} 秒后刷新Token池 (目标时间前{}s)", action)
     for token_pool in token_pools:
         if token_pool: token_pool.start_preloading()
     logging.info("✅ Token池已开始最后冲刺刷新")
 
     # 3. 精准等待到目标时间
-    wait_for_time(target_dt, "将在 {:.1f} 秒后开始预约")
+    # 【修正】传入 action
+    wait_for_time(target_dt, "将在 {:.1f} 秒后开始预约", action)
     logging.info(f"到达目标时间 {RESERVE_TARGET_TIME}（北京时间），开始预约")
 
     start_reservation_ultra_fast(users, logged_sessions, captcha_pools, token_pools, action)
