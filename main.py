@@ -30,7 +30,7 @@ def get_current_dayofweek(action=False):
     return get_now(action).strftime("%A")
 
 # --- 全局配置 ---
-RESERVE_TARGET_TIME = "18:29:00"  # 目标预约时间 (例如 "18:21:00")
+RESERVE_TARGET_TIME = "18:31:00"  # 目标预约时间 (例如 "18:21:00")
 ENABLE_SLIDER = True             # 启用滑块验证
 RESERVE_NEXT_DAY = False          # 预约明天
 CAPTCHA_POOL_SIZE = 10           # 验证码池大小
