@@ -6,6 +6,7 @@ import logging
 import datetime
 import threading
 from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -24,13 +25,13 @@ get_current_dayofweek = lambda action: (
     else time.strftime("%A", time.localtime())
 )
 
-SLEEPTIME = 0.1
-RESERVE_TARGET_TIME = "20:21:00"
-ENABLE_SLIDER = True
-MAX_ATTEMPT = 1
-RESERVE_NEXT_DAY = False
-CAPTCHA_POOL_SIZE = 5
-CAPTCHA_PRELOAD_TIME = 5
+SLEEPTIME = 0.1  # 减少间隔时间
+RESERVE_TARGET_TIME = "20:29:00"  # 预约开始的目标时间（北京时间）
+ENABLE_SLIDER = True  # 是否有滑块验证
+MAX_ATTEMPT = 1  # 减少重试次数，专注速度
+RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
+CAPTCHA_POOL_SIZE = 5  # 验证码池大小
+CAPTCHA_PRELOAD_TIME = 5  # 提前5秒开始预加载验证码
 
 
 class CaptchaPool:
@@ -56,7 +57,7 @@ class CaptchaPool:
                         logging.info(
                             f"✅ 验证码预加载成功，当前池大小: {self.captcha_queue.qsize()}"
                         )
-                    time.sleep(0.5)
+                    time.sleep(0.5)  # 避免请求过快
                 except Exception as e:
                     logging.warning(f"⚠️ 验证码预加载失败: {e}")
                     time.sleep(1)
@@ -96,20 +97,11 @@ def warm_up_session(session, roomid, seatid):
 
 
 def rapid_submit_single(session, times, roomid, seatid, captcha_pool, action):
-    """极速提交单个预约 (JIT 刷新 + 提交)"""
+    """极速提交单个预约"""
     start_time = time.time()
     try:
-        # 1. 从池子取验证码
         captcha = captcha_pool.get_captcha()
         captcha_time = time.time()
-
-        # 2. 提交前轻刷一次座位页面，刷新上下文
-        session.requests.get(
-            f"https://office.chaoxing.com/front/third/apps/seat/code?id={roomid}&seatNum={seatid}",
-            verify=False,
-        )
-
-        # 3. 立即获取 token
         token, value = session._get_page_token(
             session.url.format(roomid, seatid), require_value=True
         )
@@ -118,7 +110,6 @@ def rapid_submit_single(session, times, roomid, seatid, captcha_pool, action):
             f"⚡ JIT 获取token: {token} (耗时: {token_time - captcha_time:.2f}s)"
         )
 
-        # 4. 立刻提交
         success = session.get_submit(
             session.submit_url,
             times=times,
@@ -135,6 +126,7 @@ def rapid_submit_single(session, times, roomid, seatid, captcha_pool, action):
             logging.info(f"🎉 预约成功！总耗时: {total_time:.2f}s")
         else:
             logging.warning(f"❌ 预约失败，总耗时: {total_time:.2f}s")
+
         return success
 
     except Exception as e:
@@ -164,7 +156,6 @@ def pre_login_users(users, usernames, passwords, action):
             continue
 
         logging.info(f"User {username}: 提前登录中...")
-
         s = reserve(
             sleep_time=SLEEPTIME,
             max_attempt=MAX_ATTEMPT,
@@ -191,7 +182,6 @@ def pre_login_users(users, usernames, passwords, action):
 def wait_for_target_time(target_time, action):
     """等待到达目标时间"""
     current_time = get_current_time(action)
-
     if current_time < target_time:
         if action:
             current_dt = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
@@ -204,7 +194,6 @@ def wait_for_target_time(target_time, action):
             second=int(target_time.split(":")[2]),
             microsecond=0,
         )
-
         if target_dt <= current_dt:
             target_dt += datetime.timedelta(days=1)
 
@@ -217,13 +206,16 @@ def wait_for_target_time(target_time, action):
     logging.info(f"到达目标时间 {target_time}（北京时间），开始预约")
 
 
-def start_reservation_optimized(users, logged_sessions, captcha_pools, action):
-    """开始极速预约"""
-    current_dayofweek = get_current_dayofweek(action)
+def parallel_submit(session, time_slot, roomid, seatid, captcha_pool, action):
+    """并行提交封装"""
+    return rapid_submit_single(session, time_slot, roomid, seatid, captcha_pool, action)
 
+
+def start_reservation_parallel(users, logged_sessions, captcha_pools, action):
+    """并行极速预约（限制 2 路并发）"""
+    current_dayofweek = get_current_dayofweek(action)
     for index, user in enumerate(users):
         username, password, times, roomid, seatid, daysofweek = user.values()
-
         if current_dayofweek not in daysofweek:
             continue
 
@@ -232,26 +224,30 @@ def start_reservation_optimized(users, logged_sessions, captcha_pools, action):
         if s is None or captcha_pool is None:
             continue
 
-        logging.info(f"🚀 开始极速预约 - 用户 {username}")
+        logging.info(f"🚀 并行极速预约 - 用户 {username}")
         time_slots = times if isinstance(times[0], list) else [times]
 
-        for i, time_slot in enumerate(time_slots):
-            logging.info(f"⚡ 预约时间段 {i+1}/{len(time_slots)}: {time_slot}")
-            success = rapid_submit_single(
-                s, time_slot, roomid, seatid[0], captcha_pool, action
-            )
-            if success:
-                logging.info(f"✅ 时间段 {time_slot} 预约成功！")
-            if i < len(time_slots) - 1:
-                time.sleep(0.2)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    parallel_submit, s, slot, roomid, seatid[0], captcha_pool, action
+                )
+                for slot in time_slots
+            ]
+            for f in futures:
+                try:
+                    if f.result():
+                        logging.info("✅ 并行预约成功！")
+                    else:
+                        logging.warning("❌ 并行预约失败！")
+                except Exception as e:
+                    logging.error(f"💥 并行异常: {e}")
 
         captcha_pool.stop()
 
 
 def main(users, action=False):
-    current_time = get_current_time(action)
     logging.info(f"程序启动，立即登录 (action={'on' if action else 'off'})")
-
     usernames, passwords = None, None
     if action:
         usernames, passwords = get_user_credentials(action)
@@ -288,7 +284,7 @@ def main(users, action=False):
     logging.info("✅ 验证码池已启动")
 
     wait_for_target_time(RESERVE_TARGET_TIME, action)
-    start_reservation_optimized(users, logged_sessions, captcha_pools, action)
+    start_reservation_parallel(users, logged_sessions, captcha_pools, action)
 
 
 def debug(users, action=False):
@@ -296,7 +292,6 @@ def debug(users, action=False):
         f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nRESERVE_TARGET_TIME: {RESERVE_TARGET_TIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}\nCAPTCHA_POOL_SIZE: {CAPTCHA_POOL_SIZE}"
     )
     logging.info(f"Debug Mode start! , action {'on' if action else 'off'}")
-
     if action:
         usernames, passwords = get_user_credentials(action)
 
@@ -325,6 +320,7 @@ def debug(users, action=False):
         s.get_login_status()
         s.login(username, password)
         s.requests.headers.update({"Host": "office.chaoxing.com"})
+
         captcha_pool = CaptchaPool(s, 3)
         captcha_pool.start_preloading()
         time.sleep(2)
@@ -336,9 +332,7 @@ def debug(users, action=False):
                 )
                 time.sleep(0.3)
         else:
-            rapid_submit_single(
-                s, times, roomid, seatid[0], captcha_pool, action
-            )
+            rapid_submit_single(s, times, roomid, seatid[0], captcha_pool, action)
 
         captcha_pool.stop()
         return
