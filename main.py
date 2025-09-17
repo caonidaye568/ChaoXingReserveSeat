@@ -7,7 +7,7 @@ import datetime
 import threading
 import copy
 from queue import Queue
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -19,10 +19,8 @@ from utils import reserve, get_user_credentials
 def get_now(action=False):
     """根据运行环境获取当前时间（统一为北京时间）"""
     if action:
-        # 在GitHub Action (UTC) 环境下，加上8小时得到北京时间
         return datetime.datetime.utcnow() + datetime.timedelta(hours=8)
     else:
-        # 在本地环境，直接获取本地时间
         return datetime.datetime.now()
 
 def get_current_dayofweek(action=False):
@@ -30,121 +28,93 @@ def get_current_dayofweek(action=False):
     return get_now(action).strftime("%A")
 
 # --- 全局配置 ---
-RESERVE_TARGET_TIME = "18:31:00"  # 目标预约时间 (例如 "18:21:00")
-ENABLE_SLIDER = True             # 启用滑块验证
-RESERVE_NEXT_DAY = False          # 预约明天
-CAPTCHA_POOL_SIZE = 10           # 验证码池大小
-PRELOAD_START_SECONDS = 8        # 提前多少秒开始预加载验证码
+RESERVE_TARGET_TIME = "18:35:00"
+ENABLE_SLIDER = True
+RESERVE_NEXT_DAY = False
+POOL_SIZE = 15  # 验证码和Token池的大小
+PRELOAD_START_SECONDS = 8 # 提前多少秒开始预加载
 
-class CaptchaPool:
-    """
-    终极版验证码池:
-    - 在主session上并行预加载，将成功结果存入队列.
-    - 解决验证码获取缓慢的核心瓶颈.
-    """
-    def __init__(self, base_session, pool_size):
+class ResourcePool:
+    """通用资源池，用于预加载验证码和Token"""
+    def __init__(self, name, base_session, pool_size, target_func):
+        self.name = name
         self.base_session = base_session
         self.pool_size = pool_size
-        self.captcha_queue = Queue()
+        self.queue = Queue()
         self.is_active = False
-        self.preload_threads = []
+        self.target_func = target_func
 
     def _preload_worker(self):
-        """单个预加载线程的工作内容"""
-        while self.is_active and self.captcha_queue.qsize() < self.pool_size:
+        while self.is_active and self.queue.qsize() < self.pool_size:
             try:
                 session_copy = copy.deepcopy(self.base_session)
-                captcha = session_copy.resolve_captcha()
-                if captcha:
-                    self.captcha_queue.put(captcha)
-                    logging.info(f"✅ 验证码预加载成功，当前池大小: {self.captcha_queue.qsize()}")
+                resource = self.target_func(session_copy)
+                if resource:
+                    self.queue.put(resource)
+                    logging.info(f"✅ {self.name}预加载成功，当前池大小: {self.queue.qsize()}")
                 else:
-                    time.sleep(0.5)
+                    time.sleep(0.3)
             except Exception as e:
-                logging.warning(f"⚠️ 验证码预加载线程异常: {e}")
-                time.sleep(1)
+                logging.warning(f"⚠️ {self.name}预加载线程异常: {e}")
+                time.sleep(0.5)
 
     def start(self):
-        """启动验证码池的并行预加载"""
-        if self.is_active:
-            return
-        logging.info(f"🔄 启动验证码池预加载，目标数量: {self.pool_size}")
+        if self.is_active: return
+        logging.info(f"🔄 启动{self.name}池预加载，目标数量: {self.pool_size}")
         self.is_active = True
+        # 使用多个线程并行预加载
         for _ in range(self.pool_size // 2):
             thread = threading.Thread(target=self._preload_worker, daemon=True)
             thread.start()
-            self.preload_threads.append(thread)
 
     def stop(self):
-        """停止所有预加载活动"""
         self.is_active = False
-        logging.info("🛑 验证码池停止预加载.")
+        logging.info(f"🛑 {self.name}池停止预加载.")
 
-    def get_captcha(self):
-        """从池中获取一个验证码"""
-        if not self.captcha_queue.empty():
-            return self.captcha_queue.get_nowait()
+    def get(self):
+        if not self.queue.empty():
+            return self.queue.get_nowait()
         else:
-            logging.warning("⚠️ 验证码池为空！正在紧急生成...")
-            return self.base_session.resolve_captcha()
+            logging.warning(f"⚠️ {self.name}池为空！正在紧急生成...")
+            return self.target_func(self.base_session)
 
-def lightning_submit_worker(base_session, times, roomid, seatid, captcha, action):
-    """
-    闪电突袭工作线程: 任务极度简化，只负责光速获取Token和提交.
-    """
-    start_time = time.time()
+def lightning_submit_worker(base_session, times, roomid, seatid, captcha, token_data, action):
+    """闪电突袭工作线程: 任务简化到只剩提交"""
     session_copy = copy.deepcopy(base_session)
+    token, value = token_data
 
     try:
-        token, value = session_copy._get_page_token(
-            session_copy.url.format(roomid, seatid), require_value=True
-        )
-        if not token:
-            logging.error(f"💥 (线程 {times[0]}-{times[1]}) 紧急获取Token失败!")
-            return False
-
         success = session_copy.get_submit(
-            session_copy.submit_url,
-            times=times,
-            token=token,
-            roomid=roomid,
-            seatid=seatid,
-            captcha=captcha,
-            action=action,
-            value=value,
+            session_copy.submit_url, times=times, token=token, roomid=roomid,
+            seatid=seatid, captcha=captcha, action=action, value=value,
         )
-        
-        total_time = time.time() - start_time
-        logging.info(f"⚡ (线程 {times[0]}-{times[1]}) 提交完成! 耗时: {total_time:.2f}s")
         return success
-        
     except Exception as e:
-        total_time = time.time() - start_time
-        logging.error(f"💥 (线程 {times[0]}-{times[1]}) 提交时异常: {e}，耗时: {total_time:.2f}s")
+        logging.error(f"💥 (线程 {times[0]}-{times[1]}) 提交时异常: {e}")
         return False
 
-def start_lightning_reservation(user_info, base_session, captcha_pool, action):
-    """
-    总指挥: 协调资源，发起闪电预约.
-    """
+def start_lightning_reservation(user_info, base_session, captcha_pool, token_pool, action):
     username = user_info['username']
     times = user_info['times']
     roomid = user_info['roomid']
     seatid = user_info['seatid']
     
     logging.info(f"🚀 用户 {username} 所有线程准备就绪, 开始闪电突袭!")
-    
     time_slots = times if isinstance(times[0], list) else [times]
     
     with ThreadPoolExecutor(max_workers=len(time_slots)) as executor:
         futures = []
         for slot in time_slots:
             try:
-                captcha = captcha_pool.get_captcha()
-                future = executor.submit(lightning_submit_worker, base_session, slot, roomid, seatid[0], captcha, action)
+                captcha = captcha_pool.get()
+                token_data = token_pool.get()
+                future = executor.submit(lightning_submit_worker, base_session, slot, roomid, seatid[0], captcha, token_data, action)
                 futures.append(future)
             except Exception as e:
                 logging.error(f"为时间段 {slot} 分配任务时出错: {e}")
+
+        # 【BUG修复】使用wait确保所有任务都完成后再继续
+        wait(futures)
 
         successful_slots = [time_slots[i] for i, f in enumerate(futures) if f.done() and f.result()]
         
@@ -154,7 +124,6 @@ def start_lightning_reservation(user_info, base_session, captcha_pool, action):
             logging.warning(f"😞 任务结束. 用户 {username} 所有时间段预约均失败.")
 
 def pre_login_user(user, usernames, passwords, action, index):
-    """登录单个用户并返回session对象"""
     username, password, _, roomid, seatid, daysofweek = user.values()
     
     if action:
@@ -191,9 +160,27 @@ def main(users, action=False):
 
     user_sessions = [pre_login_user(u, usernames, passwords, action, i) for i, u in enumerate(users)]
 
-    captcha_pools = [CaptchaPool(s, CAPTCHA_POOL_SIZE) if s else None for s in user_sessions]
-    
-    # --- 核心时间计算逻辑修正 ---
+    # --- 为每个用户创建并启动双资源池 ---
+    captcha_pools = []
+    token_pools = []
+    for i, session in enumerate(user_sessions):
+        if session:
+            # 定义获取资源的函数
+            get_captcha_func = lambda s: s.resolve_captcha()
+            get_token_func = lambda s: s._get_page_token(
+                s.url.format(users[i]['roomid'], users[i]['seatid'][0]), require_value=True
+            )
+            
+            captcha_pool = ResourcePool("验证码", session, POOL_SIZE, get_captcha_func)
+            token_pool = ResourcePool("Token", session, POOL_SIZE, get_token_func)
+            
+            captcha_pools.append(captcha_pool)
+            token_pools.append(token_pool)
+        else:
+            captcha_pools.append(None)
+            token_pools.append(None)
+
+    # --- 时间计算与等待 ---
     now_dt = get_now(action)
     target_dt = now_dt.replace(
         hour=int(RESERVE_TARGET_TIME.split(":")[0]),
@@ -201,21 +188,21 @@ def main(users, action=False):
         second=int(RESERVE_TARGET_TIME.split(":")[2]),
         microsecond=0
     )
-    if target_dt <= now_dt: # 如果目标时间已过，则设为明天
+    if target_dt <= now_dt:
         target_dt += datetime.timedelta(days=1)
     
     preload_start_dt = target_dt - datetime.timedelta(seconds=PRELOAD_START_SECONDS)
     
-    now_dt = get_now(action) # 再次获取当前时间，以防万一
+    now_dt = get_now(action)
     if now_dt < preload_start_dt:
         wait_seconds = (preload_start_dt - now_dt).total_seconds()
         if wait_seconds > 0:
-            logging.info(f"将在 {wait_seconds:.1f} 秒后开始预加载验证码...")
+            logging.info(f"将在 {wait_seconds:.1f} 秒后开始预加载...")
             time.sleep(wait_seconds)
     
-    for pool in captcha_pools:
-        if pool:
-            pool.start()
+    # 同时启动所有用户的资源池
+    for pool in captcha_pools + token_pools:
+        if pool: pool.start()
 
     now_dt = get_now(action)
     if now_dt < target_dt:
@@ -229,13 +216,14 @@ def main(users, action=False):
 
     logging.info(f"到达目标时间 {RESERVE_TARGET_TIME}, 所有用户总攻开始!")
 
+    # 对每个用户发起总攻
     for i, session in enumerate(user_sessions):
         if session:
-            start_lightning_reservation(users[i], session, captcha_pools[i], action)
+            start_lightning_reservation(users[i], session, captcha_pools[i], token_pools[i], action)
 
-    for pool in captcha_pools:
-        if pool:
-            pool.stop()
+    # 停止所有资源池
+    for pool in captcha_pools + token_pools:
+        if pool: pool.stop()
 
 if __name__ == "__main__":
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
@@ -245,7 +233,6 @@ if __name__ == "__main__":
     parser.add_argument("-a", "--action", action="store_true", help="enable for github action")
     args = parser.parse_args()
     
-    # 全局修改 RESERVE_TARGET_TIME
     with open(args.user, "r+") as data:
         config = json.load(data)
         usersdata = config["reserve"]
