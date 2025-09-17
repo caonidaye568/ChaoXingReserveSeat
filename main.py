@@ -26,7 +26,7 @@ get_current_dayofweek = lambda action: (
 )
 
 SLEEPTIME = 0.02  # 进一步减少间隔时间
-RESERVE_TARGET_TIME = "22:00:00"  # 预约开始的目标时间（北京时间）
+RESERVE_TARGET_TIME = "15:13:00"  # 预约开始的目标时间（北京时间）
 ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 1  # 减少重试次数，专注速度
 RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
