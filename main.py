@@ -31,8 +31,8 @@ ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 1  # 减少重试次数，专注速度
 RESERVE_NEXT_DAY = False  # 预约明天而不是今天的
 CAPTCHA_POOL_SIZE = 5  # 适中的验证码池大小
-CAPTCHA_PRELOAD_TIME = 3  # 提前8秒开始预加载验证码
-TOKEN_POOL_SIZE = 4  # 减少Token池大小避免过多请求
+CAPTCHA_PRELOAD_TIME = 2  # 提前8秒开始预加载验证码
+TOKEN_POOL_SIZE = 1  # 减少Token池大小避免过多请求
 
 class TokenPool:
     """Token缓存池"""
