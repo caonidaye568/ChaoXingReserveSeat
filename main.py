@@ -96,43 +96,54 @@ def warm_up_session(session, roomid, seatid):
         logging.warning(f"⚠️ Session预热失败: {e}")
 
 
-def rapid_submit_single(session, times, roomid, seatid, captcha_pool, action):
-    """极速提交单个预约"""
+def rapid_submit_single(session, times, roomid, seatid, captcha_pool, action, max_retries=2):
+    """极速提交单个预约，增加重试机制"""
     start_time = time.time()
-    try:
-        captcha = captcha_pool.get_captcha()
-        captcha_time = time.time()
-        token, value = session._get_page_token(
-            session.url.format(roomid, seatid), require_value=True
-        )
-        token_time = time.time()
-        logging.info(
-            f"⚡ JIT 获取token: {token} (耗时: {token_time - captcha_time:.2f}s)"
-        )
+    
+    for attempt in range(max_retries):
+        try:
+            # 每次尝试都重新获取验证码和token
+            captcha = captcha_pool.get_captcha()
+            captcha_time = time.time()
+            token, value = session._get_page_token(
+                session.url.format(roomid, seatid), require_value=True
+            )
+            token_time = time.time()
+            logging.info(
+                f"⚡ JIT 获取token: {token} (耗时: {token_time - captcha_time:.2f}s)"
+            )
 
-        success = session.get_submit(
-            session.submit_url,
-            times=times,
-            token=token,
-            roomid=roomid,
-            seatid=seatid,
-            captcha=captcha,
-            action=action,
-            value=value,
-        )
+            success = session.get_submit(
+                session.submit_url,
+                times=times,
+                token=token,
+                roomid=roomid,
+                seatid=seatid,
+                captcha=captcha,
+                action=action,
+                value=value,
+            )
 
-        total_time = time.time() - start_time
-        if success:
-            logging.info(f"🎉 预约成功！总耗时: {total_time:.2f}s")
-        else:
-            logging.warning(f"❌ 预约失败，总耗时: {total_time:.2f}s")
+            total_time = time.time() - start_time
+            if success:
+                logging.info(f"🎉 预约成功！总耗时: {total_time:.2f}s")
+                return True
+            else:
+                if attempt < max_retries - 1:
+                    logging.warning(f"❌ 预约失败，尝试第 {attempt + 2} 次，总耗时: {total_time:.2f}s")
+                    time.sleep(0.1)  # 短暂等待后重试
+                else:
+                    logging.warning(f"❌ 预约失败，总耗时: {total_time:.2f}s")
 
-        return success
+        except Exception as e:
+            total_time = time.time() - start_time
+            if attempt < max_retries - 1:
+                logging.error(f"💥 预约异常: {e}，尝试第 {attempt + 2} 次，总耗时: {total_time:.2f}s")
+                time.sleep(0.1)
+            else:
+                logging.error(f"💥 预约异常: {e}，总耗时: {total_time:.2f}s")
 
-    except Exception as e:
-        total_time = time.time() - start_time
-        logging.error(f"💥 预约异常: {e}，总耗时: {total_time:.2f}s")
-        return False
+    return False
 
 
 def pre_login_users(users, usernames, passwords, action):
