@@ -31,7 +31,8 @@ ENABLE_SLIDER = True  # 是否有滑块验证
 MAX_ATTEMPT = 1  # 减少重试次数，专注速度
 RESERVE_NEXT_DAY = True  # 预约明天而不是今天的
 CAPTCHA_POOL_SIZE = 5  # 验证码池大小
-CAPTCHA_PRELOAD_TIME = 5  # 提前5秒开始预加载验证码
+LOGIN_ADVANCE_TIME = 45  # 目标时间前45秒开始登录
+CAPTCHA_PRELOAD_TIME = 5  # 验证码池启动时间（登录后5秒）
 
 
 class CaptchaPool:
@@ -146,8 +147,31 @@ def rapid_submit_single(session, times, roomid, seatid, captcha_pool, action, ma
     return False
 
 
-def pre_login_users(users, usernames, passwords, action):
-    """提前登录所有用户并预热"""
+def delayed_login_users(users, usernames, passwords, action):
+    """延迟登录 - 在目标时间前45秒登录"""
+    if action:
+        current_dt = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+    else:
+        current_dt = datetime.datetime.now()
+
+    target_dt = current_dt.replace(
+        hour=int(RESERVE_TARGET_TIME.split(":")[0]),
+        minute=int(RESERVE_TARGET_TIME.split(":")[1]),
+        second=int(RESERVE_TARGET_TIME.split(":")[2]),
+        microsecond=0,
+    )
+    if target_dt <= current_dt:
+        target_dt += datetime.timedelta(days=1)
+
+    login_dt = target_dt - datetime.timedelta(seconds=LOGIN_ADVANCE_TIME)
+    wait_seconds = (login_dt - current_dt).total_seconds()
+    
+    if wait_seconds > 0:
+        logging.info(f"将在 {wait_seconds:.1f} 秒后开始登录 (目标时间前{LOGIN_ADVANCE_TIME}s)")
+        time.sleep(wait_seconds)
+
+    logging.info(f"🚀 开始延迟登录策略，距离预约开始还有 {LOGIN_ADVANCE_TIME} 秒")
+    
     logged_sessions = []
     captcha_pools = []
     current_dayofweek = get_current_dayofweek(action)
@@ -166,7 +190,9 @@ def pre_login_users(users, usernames, passwords, action):
             captcha_pools.append(None)
             continue
 
-        logging.info(f"User {username}: 提前登录中...")
+        logging.info(f"User {username}: 快速登录中...")
+        start_login_time = time.time()
+        
         s = reserve(
             sleep_time=SLEEPTIME,
             max_attempt=MAX_ATTEMPT,
@@ -175,11 +201,18 @@ def pre_login_users(users, usernames, passwords, action):
         )
         s.get_login_status()
         login_success, msg = s.login(username, password)
+        
+        login_elapsed = time.time() - start_login_time
+        logging.info(f"User {username}: 登录耗时 {login_elapsed:.2f}s")
 
         if login_success:
             s.requests.headers.update({"Host": "office.chaoxing.com"})
             warm_up_session(s, roomid, seatid)
+            
+            # 立即启动验证码池
             captcha_pool = CaptchaPool(s, CAPTCHA_POOL_SIZE)
+            captcha_pool.start_preloading()
+            
             logged_sessions.append(s)
             captcha_pools.append(captcha_pool)
         else:
@@ -210,11 +243,11 @@ def wait_for_target_time(target_time, action):
 
         wait_seconds = (target_dt - current_dt).total_seconds()
         logging.info(
-            f"距离目标时间 {target_time}（北京时间）还有 {wait_seconds:.1f} 秒，sleep……"
+            f"距离目标时间 {target_time}（北京时间）还有 {wait_seconds:.1f} 秒，最终等待中..."
         )
         time.sleep(wait_seconds)
 
-    logging.info(f"到达目标时间 {target_time}（北京时间），开始预约")
+    logging.info(f"⏰ 到达目标时间 {target_time}（北京时间），开始预约")
 
 
 def parallel_submit(session, time_slot, roomid, seatid, captcha_pool, action):
@@ -258,49 +291,26 @@ def start_reservation_parallel(users, logged_sessions, captcha_pools, action):
 
 
 def main(users, action=False):
-    logging.info(f"程序启动，立即登录 (action={'on' if action else 'off'})")
+    logging.info(f"程序启动，采用延迟登录策略 (action={'on' if action else 'off'})")
     usernames, passwords = None, None
     if action:
         usernames, passwords = get_user_credentials(action)
 
-    logged_sessions, captcha_pools = pre_login_users(
+    # 延迟登录，在目标时间前45秒登录
+    logged_sessions, captcha_pools = delayed_login_users(
         users, usernames, passwords, action
     )
 
-    if action:
-        current_dt = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-    else:
-        current_dt = datetime.datetime.now()
-
-    target_dt = current_dt.replace(
-        hour=int(RESERVE_TARGET_TIME.split(":")[0]),
-        minute=int(RESERVE_TARGET_TIME.split(":")[1]),
-        second=int(RESERVE_TARGET_TIME.split(":")[2]),
-        microsecond=0,
-    )
-    if target_dt <= current_dt:
-        target_dt += datetime.timedelta(days=1)
-
-    start_dt = target_dt - datetime.timedelta(seconds=CAPTCHA_PRELOAD_TIME)
-    wait_seconds = (start_dt - current_dt).total_seconds()
-    if wait_seconds > 0:
-        logging.info(
-            f"将在 {wait_seconds:.1f} 秒后启动验证码池 (目标时间前{CAPTCHA_PRELOAD_TIME}s)"
-        )
-        time.sleep(wait_seconds)
-
-    for pool in captcha_pools:
-        if pool:
-            pool.start_preloading()
-    logging.info("✅ 验证码池已启动")
-
+    # 等待到达精确的目标时间
     wait_for_target_time(RESERVE_TARGET_TIME, action)
+    
+    # 开始并行预约
     start_reservation_parallel(users, logged_sessions, captcha_pools, action)
 
 
 def debug(users, action=False):
     logging.info(
-        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nRESERVE_TARGET_TIME: {RESERVE_TARGET_TIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}\nCAPTCHA_POOL_SIZE: {CAPTCHA_POOL_SIZE}"
+        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nRESERVE_TARGET_TIME: {RESERVE_TARGET_TIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}\nCAPTCHA_POOL_SIZE: {CAPTCHA_POOL_SIZE}\nLOGIN_ADVANCE_TIME: {LOGIN_ADVANCE_TIME}"
     )
     logging.info(f"Debug Mode start! , action {'on' if action else 'off'}")
     if action:
