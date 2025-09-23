@@ -173,6 +173,7 @@ def delayed_login_users(users, usernames, passwords, action):
     logging.info(f"🚀 开始延迟登录策略，距离预约开始还有 {LOGIN_ADVANCE_TIME} 秒")
     
     logged_sessions = []
+    captcha_pools = []
     current_dayofweek = get_current_dayofweek(action)
 
     for index, user in enumerate(users):
@@ -186,6 +187,7 @@ def delayed_login_users(users, usernames, passwords, action):
         if current_dayofweek not in daysofweek:
             logging.info("Today not set to reserve")
             logged_sessions.append(None)
+            captcha_pools.append(None)
             continue
 
         logging.info(f"User {username}: 快速登录中...")
@@ -206,12 +208,19 @@ def delayed_login_users(users, usernames, passwords, action):
         if login_success:
             s.requests.headers.update({"Host": "office.chaoxing.com"})
             warm_up_session(s, roomid, seatid)
+            
+            # 立即启动验证码池
+            captcha_pool = CaptchaPool(s, CAPTCHA_POOL_SIZE)
+            captcha_pool.start_preloading()
+            
             logged_sessions.append(s)
+            captcha_pools.append(captcha_pool)
         else:
             logging.error(f"User {username} login failed: {msg}")
             logged_sessions.append(None)
+            captcha_pools.append(None)
 
-    return logged_sessions
+    return logged_sessions, captcha_pools
 
 
 def wait_for_target_time(target_time, action):
@@ -288,50 +297,9 @@ def main(users, action=False):
         usernames, passwords = get_user_credentials(action)
 
     # 延迟登录，在目标时间前45秒登录
-    logged_sessions = delayed_login_users(
+    logged_sessions, captcha_pools = delayed_login_users(
         users, usernames, passwords, action
     )
-
-    # 计算验证码池启动时间（目标时间前5秒）
-    if action:
-        current_dt = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-    else:
-        current_dt = datetime.datetime.now()
-
-    target_dt = current_dt.replace(
-        hour=int(RESERVE_TARGET_TIME.split(":")[0]),
-        minute=int(RESERVE_TARGET_TIME.split(":")[1]),
-        second=int(RESERVE_TARGET_TIME.split(":")[2]),
-        microsecond=0,
-    )
-    if target_dt <= current_dt:
-        target_dt += datetime.timedelta(days=1)
-
-    captcha_start_dt = target_dt - datetime.timedelta(seconds=CAPTCHA_PRELOAD_TIME)
-    wait_seconds = (captcha_start_dt - current_dt).total_seconds()
-    
-    if wait_seconds > 0:
-        logging.info(f"将在 {wait_seconds:.1f} 秒后启动验证码池 (目标时间前{CAPTCHA_PRELOAD_TIME}s)")
-        time.sleep(wait_seconds)
-
-    # 启动验证码池
-    captcha_pools = []
-    current_dayofweek = get_current_dayofweek(action)
-    for index, user in enumerate(users):
-        username, password, times, roomid, seatid, daysofweek = user.values()
-        if current_dayofweek not in daysofweek:
-            captcha_pools.append(None)
-            continue
-            
-        s = logged_sessions[index]
-        if s is not None:
-            captcha_pool = CaptchaPool(s, CAPTCHA_POOL_SIZE)
-            captcha_pool.start_preloading()
-            captcha_pools.append(captcha_pool)
-        else:
-            captcha_pools.append(None)
-    
-    logging.info("✅ 验证码池已启动")
 
     # 等待到达精确的目标时间
     wait_for_target_time(RESERVE_TARGET_TIME, action)
